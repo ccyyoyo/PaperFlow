@@ -1,0 +1,7 @@
+    Updating crates.io index
+error: failed to select a version for the requirement `tauri-plugin-log = "^0.2"`
+candidate versions found which didn't match: 2.7.1, 2.7.0, 2.6.0, ...
+location searched: crates.io index
+required by package `paperflow-tauri v0.1.0 (D:\repos\PaperFlow\src-tauri)`
+if you are looking for the prerelease package it needs to be specified explicitly
+    tauri-plugin-log = { version = "2.0.0-rc.2" }

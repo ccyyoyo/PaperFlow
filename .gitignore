@@ -1,0 +1,13 @@
+# Node
+app/node_modules/
+app/dist/
+
+# Rust
+src-tauri/target/
+
+# Environment
+.pnpm-store/
+.DS_Store
+*.log
+/.idea/
+/.vscode/
