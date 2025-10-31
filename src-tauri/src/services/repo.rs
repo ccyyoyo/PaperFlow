@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    domain::{NewNote, Note, Paper, PaperImportRequest, UpdateNote},
+    domain::{NewNote, Note, Paper, PaperImportRequest, UpdateNote, Workspace},
     telemetry::{IpcError, IpcResult, IpcStatus},
     utils::time::now_iso,
 };
@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{search, Db};
+
+const DEFAULT_WORKSPACE_ID: &str = "default_workspace";
 
 pub fn list_papers(db: &Db, workspace_id: &str) -> IpcResult<Vec<Paper>> {
     let mut conn = db.connection();
@@ -60,6 +62,153 @@ pub fn list_notes(db: &Db, paper_id: &str) -> IpcResult<Vec<Note>> {
         .map_err(db_error)?;
 
     Ok(notes)
+}
+
+pub fn get_note(db: &Db, note_id: &str) -> IpcResult<Note> {
+    if note_id.trim().is_empty() {
+        return Err(IpcError::new(IpcStatus::BadRequest, "noteId is required"));
+    }
+
+    let mut conn = db.connection();
+    let note = conn
+        .prepare(
+            "SELECT id, paperId, page, x, y, content, color, createdAt, updatedAt \
+             FROM note WHERE id = ?1 LIMIT 1",
+        )
+        .map_err(db_error)?
+        .query_row(params![note_id], map_note)
+        .optional()
+        .map_err(db_error)?;
+
+    if let Some(note) = note {
+        Ok(note)
+    } else {
+        Err(IpcError::new(
+            IpcStatus::NotFound,
+            format!("Note {note_id} not found"),
+        ))
+    }
+}
+
+pub fn list_workspaces(db: &Db) -> IpcResult<Vec<Workspace>> {
+    let mut conn = db.connection();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, createdAt, updatedAt \
+             FROM workspace \
+             ORDER BY datetime(updatedAt) DESC, name ASC",
+        )
+        .map_err(db_error)?;
+
+    let workspaces = stmt
+        .query_map([], map_workspace)
+        .map_err(db_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error)?;
+
+    Ok(workspaces)
+}
+
+pub fn create_workspace(db: &Db, name: &str) -> IpcResult<Workspace> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(IpcError::new(
+            IpcStatus::BadRequest,
+            "Workspace name is required",
+        ));
+    }
+
+    let mut conn = db.connection();
+    let tx = conn.transaction().map_err(db_error)?;
+
+    let workspace_id = generate_workspace_id(&tx, trimmed).map_err(db_error)?;
+    let now = now_iso();
+
+    tx.execute(
+        "INSERT INTO workspace (id, name, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?3)",
+        params![&workspace_id, trimmed, &now],
+    )
+    .map_err(db_error)?;
+
+    let workspace = tx
+        .prepare("SELECT id, name, createdAt, updatedAt FROM workspace WHERE id = ?1")
+        .map_err(db_error)?
+        .query_row(params![&workspace_id], map_workspace)
+        .map_err(db_error)?;
+
+    tx.commit().map_err(db_error)?;
+    Ok(workspace)
+}
+
+pub fn rename_workspace(db: &Db, workspace_id: &str, new_name: &str) -> IpcResult<Workspace> {
+    let trimmed_id = workspace_id.trim();
+    if trimmed_id.is_empty() {
+        return Err(IpcError::new(
+            IpcStatus::BadRequest,
+            "Workspace id is required",
+        ));
+    }
+
+    let trimmed_name = new_name.trim();
+    if trimmed_name.is_empty() {
+        return Err(IpcError::new(
+            IpcStatus::BadRequest,
+            "Workspace name is required",
+        ));
+    }
+
+    let mut conn = db.connection();
+    let now = now_iso();
+
+    let updated = conn
+        .execute(
+            "UPDATE workspace SET name = ?1, updatedAt = ?2 WHERE id = ?3",
+            params![trimmed_name, &now, trimmed_id],
+        )
+        .map_err(db_error)?;
+
+    if updated == 0 {
+        return Err(IpcError::new(
+            IpcStatus::NotFound,
+            format!("Workspace {trimmed_id} not found"),
+        ));
+    }
+
+    conn.prepare("SELECT id, name, createdAt, updatedAt FROM workspace WHERE id = ?1")
+        .map_err(db_error)?
+        .query_row(params![trimmed_id], map_workspace)
+        .map_err(db_error)
+}
+
+pub fn delete_workspace(db: &Db, workspace_id: &str) -> IpcResult<()> {
+    let trimmed_id = workspace_id.trim();
+    if trimmed_id.is_empty() {
+        return Err(IpcError::new(
+            IpcStatus::BadRequest,
+            "Workspace id is required",
+        ));
+    }
+
+    if trimmed_id == DEFAULT_WORKSPACE_ID {
+        return Err(IpcError::new(
+            IpcStatus::BadRequest,
+            "Default workspace cannot be removed",
+        ));
+    }
+
+    let mut conn = db.connection();
+    let deleted = conn
+        .execute("DELETE FROM workspace WHERE id = ?1", params![trimmed_id])
+        .map_err(db_error)?;
+
+    if deleted == 0 {
+        return Err(IpcError::new(
+            IpcStatus::NotFound,
+            format!("Workspace {trimmed_id} not found"),
+        ));
+    }
+
+    Ok(())
 }
 pub fn import_papers(db: &Db, request: &PaperImportRequest) -> IpcResult<Vec<Paper>> {
     if request.paths.is_empty() {
@@ -349,6 +498,64 @@ fn map_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         created_at: row.get("createdAt")?,
         updated_at: row.get("updatedAt")?,
     })
+}
+
+fn map_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
+    Ok(Workspace {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        created_at: row.get("createdAt")?,
+        updated_at: row.get("updatedAt")?,
+    })
+}
+
+fn workspace_exists(conn: &rusqlite::Connection, workspace_id: &str) -> rusqlite::Result<bool> {
+    conn.prepare("SELECT 1 FROM workspace WHERE id = ?1")?
+        .query_row(params![workspace_id], |row| row.get::<_, i64>(0))
+        .optional()
+        .map(|value| value.is_some())
+}
+
+fn generate_workspace_id(conn: &rusqlite::Connection, name: &str) -> rusqlite::Result<String> {
+    let base = slugify_workspace(name);
+    if base.is_empty() {
+        return Ok(Uuid::new_v4().to_string());
+    }
+
+    if !workspace_exists(conn, &base)? {
+        return Ok(base);
+    }
+
+    let mut counter = 2;
+    loop {
+        let candidate = format!("{base}-{counter}");
+        if !workspace_exists(conn, &candidate)? {
+            return Ok(candidate);
+        }
+        counter += 1;
+    }
+}
+
+fn slugify_workspace(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    let mut last_was_separator = true;
+
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if ch.is_ascii_whitespace() || matches!(ch, '-' | '_' | '.') {
+            if !last_was_separator && !slug.is_empty() {
+                slug.push('-');
+                last_was_separator = true;
+            }
+        }
+    }
+
+    if slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
 }
 
 fn compute_file_hash(path: &Path) -> Result<String, IpcError> {

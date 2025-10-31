@@ -7,6 +7,10 @@ import { useWorkspaceStore } from '../../state/workspace-store';
 
 export function WorkspacePage() {
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
+  const activeWorkspaceName = useWorkspaceStore((state) => {
+    const workspace = state.workspaces.find((item) => item.id === state.activeWorkspaceId);
+    return workspace?.name ?? state.activeWorkspaceId;
+  });
   const papers = useWorkspaceStore((state) => state.papers);
 
   return (
@@ -17,7 +21,8 @@ export function WorkspacePage() {
           <div>
             <h1>PaperFlow workspace</h1>
             <p className="workspace-subtitle">
-              Active workspace: <strong>{activeWorkspaceId}</strong> — {papers.length} paper(s)
+              Active workspace: <strong>{activeWorkspaceName}</strong> (ID: {activeWorkspaceId}) -{' '}
+              {papers.length} paper(s)
             </p>
           </div>
           <nav>

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import { NoteCommands } from '../../ipc/commands';
 import { useNotesStore } from '../../state/notes-store';
@@ -29,30 +29,49 @@ export function NoteEditor({ paperId, paperTitle }: NoteEditorProps) {
   const removeNote = useNotesStore((state) => state.removeNote);
   const setNotes = useNotesStore((state) => state.setNotes);
   const clearError = useNotesStore((state) => state.clearError);
+  const selectedNoteId = useNotesStore((state) => state.selectedNoteId);
+  const selectNote = useNotesStore((state) => state.selectNote);
 
   const [form, setForm] = useState<FormState>(defaultForm);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | undefined>();
+  const listRef = useRef<HTMLUListElement | null>(null);
 
   useEffect(() => {
     if (!paperId) {
       setNotes([]);
+      selectNote(null);
       return;
     }
     void loadNotes(paperId);
-  }, [paperId, loadNotes, setNotes]);
+  }, [paperId, loadNotes, setNotes, selectNote]);
 
   useEffect(() => {
     setForm(defaultForm);
     setEditingNoteId(null);
     setActionError(undefined);
-  }, [paperId]);
+    selectNote(null);
+  }, [paperId, selectNote]);
 
   const sortedNotes = useMemo(
     () => [...notes].sort((a, b) => a.page - b.page || a.createdAt.localeCompare(b.createdAt)),
     [notes]
   );
+
+  useEffect(() => {
+    if (!selectedNoteId) {
+      return;
+    }
+    const listElement = listRef.current;
+    if (!listElement) {
+      return;
+    }
+    const target = listElement.querySelector<HTMLLIElement>(`[data-note-id="${selectedNoteId}"]`);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [selectedNoteId, sortedNotes]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -98,6 +117,7 @@ export function NoteEditor({ paperId, paperTitle }: NoteEditorProps) {
       return;
     }
     setEditingNoteId(note.id);
+    selectNote(note.id);
     setForm({
       page: note.page,
       content: note.content,
@@ -173,7 +193,7 @@ export function NoteEditor({ paperId, paperTitle }: NoteEditorProps) {
             rows={5}
             value={form.content}
             onChange={(event) => setForm((state) => ({ ...state, content: event.target.value }))}
-            placeholder="Capture highlights, questions, or follow-up tasks…"
+            placeholder="Capture highlights, questions, or follow-up tasks..."
           />
         </label>
         <div className="note-editor__actions">
@@ -197,11 +217,21 @@ export function NoteEditor({ paperId, paperTitle }: NoteEditorProps) {
 
       <div className="note-editor__list">
         <h3>Existing notes</h3>
-        {isLoading && <p>Loading…</p>}
+        {isLoading && <p>Loading...</p>}
         {!isLoading && sortedNotes.length === 0 && <p>No notes yet. Create the first note!</p>}
-        <ul>
-          {sortedNotes.map((note) => (
-            <li key={note.id}>
+        <ul ref={listRef}>
+          {sortedNotes.map((note) => {
+            const isSelected = note.id === selectedNoteId;
+            const itemClassName = isSelected
+              ? 'note-editor__item note-editor__item--selected'
+              : 'note-editor__item';
+            return (
+              <li
+                key={note.id}
+                data-note-id={note.id}
+                className={itemClassName}
+                aria-selected={isSelected}
+              >
               <header>
                 <span>Page {note.page}</span>
                 {note.color && <span className="note-color">{note.color}</span>}
@@ -218,8 +248,9 @@ export function NoteEditor({ paperId, paperTitle }: NoteEditorProps) {
                   </button>
                 </div>
               </footer>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       </div>
     </section>

@@ -3,33 +3,58 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { SearchPanel, SEARCH_DEBOUNCE_MS } from '../components/search-panel';
-import { SearchCommands } from '../ipc/commands';
+import { NoteCommands, SearchCommands } from '../ipc/commands';
+import { useNotesStore } from '../state/notes-store';
+
+const navigate = vi.fn();
+
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => navigate
+}));
+
+vi.mock('../ipc/commands', () => ({
+  SearchCommands: {
+    query: vi.fn(),
+    rebuild: vi.fn()
+  },
+  NoteCommands: {
+    get: vi.fn()
+  }
+}));
+
+const searchCommands = vi.mocked(SearchCommands);
+const noteCommands = vi.mocked(NoteCommands);
 
 describe('SearchPanel', () => {
   beforeEach(() => {
-    SearchCommands.query.mockReset();
-    SearchCommands.rebuild.mockReset();
+    searchCommands.query.mockReset();
+    searchCommands.rebuild.mockReset();
+    noteCommands.get.mockReset();
+    navigate.mockReset();
+    useNotesStore.setState({
+      notes: [],
+      isLoading: false,
+      error: undefined,
+      selectedNoteId: null
+    });
   });
 
   it('performs a debounced search and renders results', async () => {
-    vi.useFakeTimers();
-    SearchCommands.query.mockResolvedValue([
-      { ref_type: 'note', ref_id: '1', snippet: 'Found <b>result</b>', score: 0.9 }
+    const user = userEvent.setup();
+    searchCommands.query.mockResolvedValue([
+      { refType: 'note', refId: '1', snippet: 'Found <b>result</b>', score: 0.9 }
     ]);
 
-    try {
-      render(<SearchPanel />);
+    render(<SearchPanel />);
 
-      await userEvent.type(screen.getByPlaceholderText('Search notes or PDF content…'), 'result');
+    await user.type(screen.getByPlaceholderText('Search notes or PDF content...'), 'result');
 
-      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    await waitFor(() => expect(searchCommands.query).toHaveBeenCalledWith('result', 30), {
+      timeout: SEARCH_DEBOUNCE_MS * 2
+    });
 
-      await waitFor(() => expect(SearchCommands.query).toHaveBeenCalledWith('result', 30));
-
-      expect(await screen.findByText(/note #1/i)).toBeInTheDocument();
-      expect(screen.getByText(/Found/)).toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(await screen.findByText('Note')).toBeInTheDocument();
+    expect(screen.getByText('#1 | 90%')).toBeInTheDocument();
+    expect(screen.getByText(/Found/)).toBeInTheDocument();
   });
 });

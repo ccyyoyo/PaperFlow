@@ -32,6 +32,7 @@ fn main() {
             commands::paper::paper_list,
             commands::note::note_create,
             commands::note::note_list,
+            commands::note::note_get,
             commands::note::note_update,
             commands::note::note_delete,
             commands::search::search_query,
@@ -41,7 +42,11 @@ fn main() {
             commands::settings::settings_get,
             commands::settings::settings_set,
             commands::shortcuts::shortcut_register,
-            commands::shortcuts::shortcut_unregister
+            commands::shortcuts::shortcut_unregister,
+            commands::workspace::workspace_list,
+            commands::workspace::workspace_create,
+            commands::workspace::workspace_rename,
+            commands::workspace::workspace_delete
         ]);
 
     builder

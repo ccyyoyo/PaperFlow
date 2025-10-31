@@ -4,6 +4,7 @@ import { NewNote, Note, UpdateNote } from '../types/note';
 import { Paper, PaperImportRequest } from '../types/paper';
 import { SearchHit } from '../types/search';
 import { AppSettings } from '../types/settings';
+import { Workspace } from '../types/workspace';
 
 export const PaperCommands = {
   open: (paperId: string) => invokeCommand<Paper>('paper_open', { paper_id: paperId }),
@@ -13,9 +14,17 @@ export const PaperCommands = {
 
 export const NoteCommands = {
   list: (paperId: string) => invokeCommand<Note[]>('note_list', { paper_id: paperId }),
+  get: (noteId: string) => invokeCommand<Note>('note_get', { note_id: noteId }),
   create: (input: NewNote) => invokeCommand<Note>('note_create', { input }),
   update: (input: UpdateNote) => invokeCommand<Note>('note_update', { input }),
   remove: (noteId: string) => invokeCommand<void>('note_delete', { note_id: noteId })
+};
+
+export const WorkspaceCommands = {
+  list: () => invokeCommand<Workspace[]>('workspace_list'),
+  create: (name: string) => invokeCommand<Workspace>('workspace_create', { name }),
+  rename: (id: string, name: string) => invokeCommand<Workspace>('workspace_rename', { id, name }),
+  remove: (id: string) => invokeCommand<void>('workspace_delete', { id })
 };
 
 export const SearchCommands = {

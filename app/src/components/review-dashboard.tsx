@@ -35,7 +35,7 @@ export function ReviewDashboard() {
       <header>
         <h2>Review dashboard</h2>
         <button type="button" onClick={loadSummary} disabled={isLoading}>
-          {isLoading ? 'Refreshing…' : 'Refresh'}
+          {isLoading ? 'Refreshing...' : 'Refresh'}
         </button>
       </header>
 

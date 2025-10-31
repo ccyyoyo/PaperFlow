@@ -10,6 +10,11 @@ pub async fn note_list(state: State<'_, AppState>, paper_id: String) -> IpcResul
 }
 
 #[tauri::command]
+pub async fn note_get(state: State<'_, AppState>, note_id: String) -> IpcResult<Note> {
+    repo::get_note(&state.db, &note_id)
+}
+
+#[tauri::command]
 pub async fn note_create(state: State<'_, AppState>, input: NewNote) -> IpcResult<Note> {
     repo::create_note(&state.db, &input)
 }

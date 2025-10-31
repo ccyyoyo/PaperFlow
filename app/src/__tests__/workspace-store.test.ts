@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useWorkspaceStore, DEFAULT_WORKSPACE_ID } from '../state/workspace-store';
 import { PaperCommands } from '../ipc/commands';
+
+const paperCommands = vi.mocked(PaperCommands);
 
 describe('useWorkspaceStore', () => {
   beforeEach(() => {
@@ -11,10 +13,11 @@ describe('useWorkspaceStore', () => {
       isLoading: false,
       error: undefined
     });
+    paperCommands.list.mockReset();
   });
 
   it('loads papers for the specified workspace', async () => {
-    PaperCommands.list.mockResolvedValue([
+    paperCommands.list.mockResolvedValue([
       {
         id: 'paper-1',
         workspaceId: 'workspace-a',
@@ -38,7 +41,7 @@ describe('useWorkspaceStore', () => {
   });
 
   it('stores error message when loading fails', async () => {
-    PaperCommands.list.mockRejectedValue(new Error('network down'));
+    paperCommands.list.mockRejectedValue(new Error('network down'));
 
     await useWorkspaceStore.getState().loadPapers('workspace-b');
 
