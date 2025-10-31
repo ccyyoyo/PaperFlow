@@ -24,5 +24,5 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 
 [build-dependencies]
-tauri-build = { version = "1" }
+tauri-build = { version = "1", features = [] }
 

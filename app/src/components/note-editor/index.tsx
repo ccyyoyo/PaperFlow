@@ -68,7 +68,7 @@ export function NoteEditor({ paperId, paperTitle }: NoteEditorProps) {
       return;
     }
     const target = listElement.querySelector<HTMLLIElement>(`[data-note-id="${selectedNoteId}"]`);
-    if (target) {
+    if (target && typeof target.scrollIntoView === 'function') {
       target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, [selectedNoteId, sortedNotes]);

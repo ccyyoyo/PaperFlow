@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "tauri": "pnpm dlx @tauri-apps/cli@1"
+  },
   "devDependencies": {
     "jsdom": "^27.0.1"
   }
