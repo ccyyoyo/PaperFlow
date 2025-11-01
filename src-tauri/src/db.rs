@@ -9,7 +9,7 @@ struct Migration {
 
 const MIGRATIONS: &[Migration] = &[Migration {
   version: 1,
-  name: "init_schema",
+  _name: "init_schema",
   sql: include_str!("../sql/0001_init.sql"),
 }];
 

@@ -11,6 +11,17 @@
     "distDir": "../dist"
   },
   "tauri": {
+    "allowlist": {
+      "dialog": {
+        "open": true
+      },
+      "path": {
+        "all": true
+      },
+      "protocol": {
+        "asset": true
+      }
+    },
     "windows": [
       {
         "label": "main",

@@ -6,12 +6,9 @@ import type {
   PDFDocumentProxy,
   PDFPageProxy,
 } from "pdfjs-dist/types/src/display/api";
-const workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url
-).toString();
-
-GlobalWorkerOptions.workerSrc = workerSrc;
+import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
+import "pdfjs-dist/web/pdf_viewer.css";
+import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 type PdfSource = {
   url: string;
@@ -26,6 +23,12 @@ type RecentFile = {
   openedAt: number;
 };
 
+type DraftNote = {
+  page: number;
+  selectedText: string;
+  anchor: { x: number; y: number } | null;
+};
+
 const isTauriRuntime =
   typeof window !== "undefined" && Boolean((window as any).__TAURI_IPC__);
 const storageAvailable =
@@ -38,6 +41,8 @@ const MAX_SCALE = 3;
 const SCALE_STEP = 0.25;
 const DEFAULT_SCALE = 1.25;
 const RECENT_LIMIT = 6;
+
+GlobalWorkerOptions.workerSrc = workerSrc;
 
 function extractFileName(path: string) {
   const parts = path.split(/[/\\]/);
@@ -98,6 +103,9 @@ function getSourceKey(ref: { originalPath?: string; label: string }) {
 
 export function PdfViewer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerContainerRef = useRef<HTMLDivElement>(null);
+  const textLayerBuilderRef = useRef<any | null>(null);
+  const viewportRef = useRef<PageViewport | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -117,6 +125,12 @@ export function PdfViewer() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [source, setSource] = useState<PdfSource | null>(null);
 
+  const [draftNote, setDraftNote] = useState<DraftNote | null>(null);
+  const [isEditorOpen, setEditorOpen] = useState(false);
+  const [noteContent, setNoteContent] = useState("");
+  const [noteStatus, setNoteStatus] = useState<"idle" | "info">("idle");
+  const [noteMessage, setNoteMessage] = useState<string | null>(null);
+
   const renderPage = useCallback(
     async (doc: PDFDocumentProxy, page: number, pageScale: number) => {
       const canvas = canvasRef.current;
@@ -124,14 +138,46 @@ export function PdfViewer() {
 
       const pdfPage: PDFPageProxy = await doc.getPage(page);
       const viewport = pdfPage.getViewport({ scale: pageScale });
-      const context = canvas.getContext("2d");
+      viewportRef.current = viewport;
 
+      const context = canvas.getContext("2d");
       if (!context) return;
 
       canvas.width = viewport.width;
       canvas.height = viewport.height;
 
       await pdfPage.render({ canvasContext: context, viewport }).promise;
+
+      const container = textLayerContainerRef.current;
+      if (container) {
+        if (!textLayerBuilderRef.current) {
+          const viewerModule = (await import(
+            "pdfjs-dist/web/pdf_viewer.mjs"
+          )) as any;
+          const TextLayerBuilderClass =
+            viewerModule?.TextLayerBuilder ?? viewerModule?.default?.TextLayerBuilder;
+
+          if (!TextLayerBuilderClass) {
+            console.warn("pdfjs TextLayerBuilder not available");
+            container.innerHTML = "";
+            return;
+          }
+
+          textLayerBuilderRef.current = new TextLayerBuilderClass({ pdfPage });
+        } else if (typeof textLayerBuilderRef.current?.cancel === "function") {
+          textLayerBuilderRef.current.cancel();
+        }
+
+        const builder = textLayerBuilderRef.current;
+        container.innerHTML = "";
+        builder.div.style.position = "absolute";
+        builder.div.style.inset = "0";
+        builder.div.style.pointerEvents = "auto";
+        builder.div.style.color = "transparent";
+
+        await builder.render(viewport);
+        container.append(builder.div);
+      }
     },
     []
   );
@@ -166,7 +212,7 @@ export function PdfViewer() {
         const key = getSourceKey(pdfSource);
         const savedPage = lastPageMap[key];
         const initialPage = savedPage
-          ? Math.min(Math.max(savedPage, 1), doc.numPages)
+          ? clamp(savedPage, 1, doc.numPages)
           : 1;
 
         setPdfDocument(doc);
@@ -175,6 +221,10 @@ export function PdfViewer() {
         setPageNumber(initialPage);
         setPageInput(initialPage.toString());
         setStatus("ready");
+
+        setDraftNote(null);
+        setEditorOpen(false);
+        setNoteContent("");
 
         updateRecentFiles({
           label: pdfSource.label,
@@ -219,6 +269,18 @@ export function PdfViewer() {
       return next;
     });
   }, [pageNumber, source, status]);
+
+  useEffect(() => {
+    if (!isEditorOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setEditorOpen(false);
+        setDraftNote(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isEditorOpen]);
 
   const handlePickClick = async () => {
     if (isTauriRuntime) {
@@ -288,6 +350,68 @@ export function PdfViewer() {
     setScale(DEFAULT_SCALE);
   };
 
+  const handleTextSelection = useCallback(() => {
+    const textLayerRoot = textLayerBuilderRef.current?.div;
+    if (!textLayerRoot) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    if (
+      (anchorNode && !textLayerRoot.contains(anchorNode)) ||
+      (focusNode && !textLayerRoot.contains(focusNode))
+    ) {
+      return;
+    }
+
+    const text = selection.toString().trim();
+    if (!text) return;
+
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    const canvasRect = canvasRef.current?.getBoundingClientRect();
+    let anchor: DraftNote["anchor"] = null;
+    if (canvasRect) {
+      const relativeX =
+        (rect.left + rect.width / 2 - canvasRect.left) / canvasRect.width;
+      const relativeY =
+        (rect.top + rect.height / 2 - canvasRect.top) / canvasRect.height;
+      anchor = {
+        x: Number(relativeX.toFixed(4)),
+        y: Number(relativeY.toFixed(4)),
+      };
+    }
+
+    const snippet = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+
+    setDraftNote({
+      page: pageNumber,
+      selectedText: snippet,
+      anchor,
+    });
+    setNoteContent(snippet);
+    setEditorOpen(true);
+    setNoteStatus("idle");
+    setNoteMessage(null);
+
+    setTimeout(() => selection.removeAllRanges(), 0);
+  }, [pageNumber]);
+
+  const handleCancelNote = () => {
+    setEditorOpen(false);
+    setDraftNote(null);
+    setNoteContent("");
+    setNoteStatus("idle");
+    setNoteMessage(null);
+  };
+
+  const handleSaveNote = () => {
+    setNoteStatus("info");
+    setNoteMessage("筆記儲存流程將在後續版本與後端整合。");
+  };
+
   const scaleDisplay = useMemo(
     () => `${Math.round(scale * 100)}%`,
     [scale]
@@ -319,7 +443,6 @@ export function PdfViewer() {
             {status === "error" && (
               <span className="pdf-viewer__error">{errorMessage}</span>
             )}
-            {status === "idle" && <span>尚未選擇檔案</span>}
           </div>
         </div>
 
@@ -400,7 +523,7 @@ export function PdfViewer() {
                     title={
                       canOpen
                         ? `開啟 ${entry.label}`
-                        : "僅限 Tauri 環境可重新開啟此檔案"
+                        : "僅限桌面環境可重新開啟此檔案"
                     }
                   >
                     {entry.label}
@@ -412,13 +535,65 @@ export function PdfViewer() {
         </div>
       )}
 
-      <div className="pdf-viewer__canvas-wrapper">
-        {status === "ready" ? (
-          <canvas ref={canvasRef} className="pdf-viewer__canvas" />
-        ) : (
-          <div className="pdf-viewer__placeholder">
-            <p>請選擇一個 PDF 檔案開始閱讀。</p>
+      <div className="pdf-viewer__body">
+        <div className="pdf-viewer__document">
+          <div className="pdf-viewer__canvas-wrapper">
+            {status === "ready" ? (
+              <div className="pdf-viewer__page">
+                <canvas ref={canvasRef} className="pdf-viewer__canvas" />
+                <div
+                  ref={textLayerContainerRef}
+                  className="pdf-viewer__text-layer"
+                  onMouseUp={handleTextSelection}
+                  onTouchEnd={handleTextSelection}
+                  role="presentation"
+                />
+              </div>
+            ) : (
+              <div className="pdf-viewer__placeholder">
+                <p>請選擇一個 PDF 檔案開始閱讀。</p>
+              </div>
+            )}
           </div>
+        </div>
+
+        {isEditorOpen && draftNote && (
+          <aside className="pdf-viewer__note-editor">
+            <header className="pdf-viewer__note-header">
+              <h2>新增筆記</h2>
+              <p>第 {draftNote.page} 頁 ・ 選取內容</p>
+            </header>
+            <div className="pdf-viewer__note-snippet">{draftNote.selectedText}</div>
+            <label className="pdf-viewer__note-label" htmlFor="note-editor-textarea">
+              筆記內容
+            </label>
+            <textarea
+              id="note-editor-textarea"
+              value={noteContent}
+              onChange={(event) => setNoteContent(event.target.value)}
+              rows={8}
+              placeholder="輸入你的想法、待辦或標記"
+            />
+            <div className="pdf-viewer__note-actions">
+              <button
+                className="pdf-viewer__button pdf-viewer__button--ghost"
+                onClick={handleSaveNote}
+                type="button"
+              >
+                儲存（即將推出）
+              </button>
+              <button
+                className="pdf-viewer__button pdf-viewer__button--ghost"
+                onClick={handleCancelNote}
+                type="button"
+              >
+                取消
+              </button>
+            </div>
+            {noteStatus === "info" && noteMessage && (
+              <p className="pdf-viewer__note-message">{noteMessage}</p>
+            )}
+          </aside>
         )}
       </div>
     </section>
