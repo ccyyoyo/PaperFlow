@@ -1,0 +1,47 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+body,
+html {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: #101418;
+  color: #f3f4f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app {
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app__panel {
+  text-align: center;
+  padding: 3rem;
+  border-radius: 1rem;
+  background: rgba(28, 34, 40, 0.85);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 20px 45px rgba(10, 12, 16, 0.45);
+}
+
+.app__panel h1 {
+  margin: 0 0 0.75rem;
+  font-size: 2rem;
+}
+
+.app__panel p {
+  margin: 0;
+  opacity: 0.75;
+}

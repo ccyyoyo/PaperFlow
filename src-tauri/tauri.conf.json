@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "package": {
+    "productName": "PaperFlow",
+    "version": "0.0.1"
+  },
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:5173",
+    "distDir": "dist"
+  },
+  "tauri": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "PaperFlow",
+        "width": 1024,
+        "height": 768,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "bundle": {
+      "active": true,
+      "identifier": "com.paperflow.app"
+    }
+  }
+}
