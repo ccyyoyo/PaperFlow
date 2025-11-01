@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/api/dialog";
-import { convertFileSrc } from "@tauri-apps/api/tauri";
+import { readBinaryFile } from "@tauri-apps/api/fs";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 import type {
   PDFDocumentProxy,
@@ -27,6 +27,14 @@ type DraftNote = {
   page: number;
   selectedText: string;
   anchor: { x: number; y: number } | null;
+};
+
+type NoteColor = "idea" | "method" | "result";
+
+const NOTE_COLOR_OPTIONS: Record<NoteColor, { label: string; swatch: string }> = {
+  idea: { label: "靈感", swatch: "#facc15" },
+  method: { label: "方法", swatch: "#38bdf8" },
+  result: { label: "結果", swatch: "#f472b6" },
 };
 
 const isTauriRuntime =
@@ -101,6 +109,16 @@ function getSourceKey(ref: { originalPath?: string; label: string }) {
   return ref.originalPath ?? ref.label;
 }
 
+async function createTauriPdfUrl(path: string) {
+  const data = await readBinaryFile(path);
+  const blob = new Blob([new Uint8Array(data)], { type: "application/pdf" });
+  const objectUrl = URL.createObjectURL(blob);
+  return {
+    url: objectUrl,
+    cleanup: () => URL.revokeObjectURL(objectUrl),
+  };
+}
+
 export function PdfViewer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerContainerRef = useRef<HTMLDivElement>(null);
@@ -128,6 +146,9 @@ export function PdfViewer() {
   const [draftNote, setDraftNote] = useState<DraftNote | null>(null);
   const [isEditorOpen, setEditorOpen] = useState(false);
   const [noteContent, setNoteContent] = useState("");
+  const [noteColor, setNoteColor] = useState<NoteColor>("idea");
+  const [noteTags, setNoteTags] = useState<string[]>([]);
+  const [noteTagInput, setNoteTagInput] = useState("");
   const [noteStatus, setNoteStatus] = useState<"idle" | "info">("idle");
   const [noteMessage, setNoteMessage] = useState<string | null>(null);
 
@@ -225,6 +246,9 @@ export function PdfViewer() {
         setDraftNote(null);
         setEditorOpen(false);
         setNoteContent("");
+        setNoteColor("idea");
+        setNoteTags([]);
+        setNoteTagInput("");
 
         updateRecentFiles({
           label: pdfSource.label,
@@ -290,9 +314,9 @@ export function PdfViewer() {
       });
 
       if (typeof selected === "string") {
-        const url = await convertFileSrc(selected);
         const label = extractFileName(selected);
-        loadPdf({ url, label, originalPath: selected });
+        const { url, cleanup } = await createTauriPdfUrl(selected);
+        loadPdf({ url, label, originalPath: selected, cleanup });
       }
 
       return;
@@ -318,8 +342,8 @@ export function PdfViewer() {
 
   const handleRecentOpen = async (entry: RecentFile) => {
     if (!entry.path || !isTauriRuntime) return;
-    const url = await convertFileSrc(entry.path);
-    loadPdf({ url, label: entry.label, originalPath: entry.path });
+    const { url, cleanup } = await createTauriPdfUrl(entry.path);
+    loadPdf({ url, label: entry.label, originalPath: entry.path, cleanup });
   };
 
   const handlePrevPage = () => {
@@ -393,6 +417,9 @@ export function PdfViewer() {
     });
     setNoteContent(snippet);
     setEditorOpen(true);
+    setNoteColor("idea");
+    setNoteTags([]);
+    setNoteTagInput("");
     setNoteStatus("idle");
     setNoteMessage(null);
 
@@ -403,13 +430,41 @@ export function PdfViewer() {
     setEditorOpen(false);
     setDraftNote(null);
     setNoteContent("");
+    setNoteColor("idea");
+    setNoteTags([]);
+    setNoteTagInput("");
     setNoteStatus("idle");
     setNoteMessage(null);
   };
 
   const handleSaveNote = () => {
+    const trimmed = noteContent.trim();
+    if (!trimmed) {
+      setNoteStatus("info");
+      setNoteMessage("內容不可為空白");
+      return;
+    }
+
     setNoteStatus("info");
     setNoteMessage("筆記儲存流程將在後續版本與後端整合。");
+  };
+
+  const handleTagKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      const value = noteTagInput.trim();
+      if (!value) return;
+      if (!noteTags.includes(value)) {
+        setNoteTags([...noteTags, value]);
+      }
+      setNoteTagInput("");
+    } else if (event.key === "Backspace" && noteTagInput === "") {
+      setNoteTags((prev) => prev.slice(0, -1));
+    }
+  };
+
+  const handleRemoveTag = (tag: string) => {
+    setNoteTags((prev) => prev.filter((item) => item !== tag));
   };
 
   const scaleDisplay = useMemo(
@@ -557,13 +612,38 @@ export function PdfViewer() {
           </div>
         </div>
 
-        {isEditorOpen && draftNote && (
+        {isEditorOpen && (
           <aside className="pdf-viewer__note-editor">
             <header className="pdf-viewer__note-header">
               <h2>新增筆記</h2>
-              <p>第 {draftNote.page} 頁 ・ 選取內容</p>
+              <p>第 {draftNote?.page ?? pageNumber} 頁</p>
             </header>
-            <div className="pdf-viewer__note-snippet">{draftNote.selectedText}</div>
+            {draftNote?.selectedText && (
+              <div className="pdf-viewer__note-snippet">{draftNote.selectedText}</div>
+            )}
+            <div className="pdf-viewer__note-colors">
+              <span className="pdf-viewer__note-label">顏色分類</span>
+              <div className="pdf-viewer__note-color-options">
+                {(Object.keys(NOTE_COLOR_OPTIONS) as NoteColor[]).map((key) => {
+                  const option = NOTE_COLOR_OPTIONS[key];
+                  const isActive = noteColor === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`pdf-viewer__note-color ${isActive ? "pdf-viewer__note-color--active" : ""}`}
+                      onClick={() => setNoteColor(key)}
+                    >
+                      <span
+                        className="pdf-viewer__note-color-swatch"
+                        style={{ background: option.swatch }}
+                      />
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <label className="pdf-viewer__note-label" htmlFor="note-editor-textarea">
               筆記內容
             </label>
@@ -574,13 +654,40 @@ export function PdfViewer() {
               rows={8}
               placeholder="輸入你的想法、待辦或標記"
             />
+            <div className="pdf-viewer__note-tags">
+              <label className="pdf-viewer__note-label" htmlFor="note-tag-input">
+                標籤
+              </label>
+              <div className="pdf-viewer__note-tags-input">
+                {noteTags.map((tag) => (
+                  <span key={tag} className="pdf-viewer__note-tag">
+                    {tag}
+                    <button
+                      type="button"
+                      className="pdf-viewer__note-tag-remove"
+                      onClick={() => handleRemoveTag(tag)}
+                      aria-label={`移除標籤 ${tag}`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <input
+                  id="note-tag-input"
+                  value={noteTagInput}
+                  onChange={(event) => setNoteTagInput(event.target.value)}
+                  onKeyDown={handleTagKeyDown}
+                  placeholder={noteTags.length === 0 ? "輸入後按 Enter" : "新增標籤"}
+                />
+              </div>
+            </div>
             <div className="pdf-viewer__note-actions">
               <button
                 className="pdf-viewer__button pdf-viewer__button--ghost"
                 onClick={handleSaveNote}
                 type="button"
               >
-                儲存（即將推出）
+                儲存筆記
               </button>
               <button
                 className="pdf-viewer__button pdf-viewer__button--ghost"

@@ -320,6 +320,118 @@ body {
   border-color: rgba(84, 124, 243, 0.6);
 }
 
+.pdf-viewer__note-meta {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: rgba(236, 240, 255, 0.75);
+  align-items: center;
+}
+
+.pdf-viewer__note-meta-label {
+  opacity: 0.7;
+}
+
+.pdf-viewer__note-meta-value {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.pdf-viewer__note-colors {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pdf-viewer__note-color-options {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.pdf-viewer__note-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid rgba(118, 138, 166, 0.35);
+  background: rgba(24, 32, 44, 0.65);
+  color: rgba(236, 240, 255, 0.82);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pdf-viewer__note-color:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(60, 90, 150, 0.3);
+}
+
+.pdf-viewer__note-color--active {
+  border-color: rgba(90, 125, 255, 0.85);
+  box-shadow: 0 0 0 2px rgba(90, 125, 255, 0.35);
+}
+
+.pdf-viewer__note-color-swatch {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  border: 2px solid rgba(13, 18, 28, 0.9);
+}
+
+.pdf-viewer__note-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pdf-viewer__note-tags-input {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  border: 1px solid rgba(118, 138, 166, 0.25);
+  background: rgba(10, 14, 24, 0.95);
+  border-radius: 10px;
+  padding: 0.35rem 0.5rem;
+}
+
+.pdf-viewer__note-tags-input input {
+  min-width: 120px;
+  flex: 1 1 auto;
+  border: none;
+  background: transparent;
+  color: #f2f5ff;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+.pdf-viewer__note-tags-input input:focus {
+  outline: none;
+}
+
+.pdf-viewer__note-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.6rem;
+  background: rgba(70, 86, 127, 0.55);
+  color: rgba(236, 240, 255, 0.9);
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.pdf-viewer__note-tag-remove {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0;
+}
+
 .pdf-viewer__note-actions {
   display: flex;
   gap: 0.75rem;
@@ -342,3 +454,4 @@ body {
     width: 100%;
   }
 }
+
