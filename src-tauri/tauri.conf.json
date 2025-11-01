@@ -8,7 +8,7 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devPath": "http://localhost:1420",
-    "distDir": "dist"
+    "distDir": "../dist"
   },
   "tauri": {
     "windows": [
@@ -26,7 +26,10 @@
     },
     "bundle": {
       "active": true,
-      "identifier": "com.paperflow.app"
+      "identifier": "com.paperflow.app",
+      "icon": [
+        "icons/icon.ico"
+      ]
     }
   }
 }
