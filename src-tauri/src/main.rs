@@ -2,8 +2,10 @@
 
 mod db;
 mod note;
+mod paper;
 
 use note::{NewNoteInput, Note, UpdateNoteInput};
+use paper::Paper;
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -52,6 +54,19 @@ fn delete_note_command(state: State<AppState>, note_id: String) -> Result<(), St
     .map(|_| ())
 }
 
+#[tauri::command]
+fn upsert_paper_command(
+  state: State<AppState>,
+  title: String,
+  path: String,
+) -> Result<Paper, String> {
+  let conn = state
+    .conn
+    .lock()
+    .map_err(|_| "資料庫連線忙碌中，稍後再試".to_string())?;
+  paper::upsert_paper_by_path(&conn, &path, &title).map_err(|err| err.to_string())
+}
+
 fn database_path(app: &tauri::AppHandle) -> std::io::Result<PathBuf> {
   let resolver = app.path_resolver();
   let mut path = resolver
@@ -81,7 +96,8 @@ fn main() {
       create_note_command,
       list_notes_command,
       update_note_command,
-      delete_note_command
+      delete_note_command,
+      upsert_paper_command
     ])
     .run(tauri::generate_context!())
     .expect("error while running PaperFlow");

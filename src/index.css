@@ -36,6 +36,32 @@ body {
   opacity: 0.7;
 }
 
+.app__tabs {
+  display: inline-flex;
+  gap: 0.75rem;
+  margin: 0.25rem 0 0.75rem;
+}
+
+.app__tab {
+  border: 1px solid rgba(118, 138, 166, 0.28);
+  background: rgba(20, 26, 36, 0.75);
+  color: #f5f7fa;
+  border-radius: 999px;
+  padding: 0.35rem 1rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.app__tab:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(60, 90, 150, 0.28);
+}
+
+.app__tab--active {
+  border-color: rgba(94, 125, 255, 0.7);
+  box-shadow: 0 0 0 2px rgba(94, 125, 255, 0.25);
+}
+
 .pdf-viewer {
   background: rgba(21, 27, 37, 0.88);
   border: 1px solid rgba(118, 138, 166, 0.12);
@@ -454,4 +480,3 @@ body {
     width: 100%;
   }
 }
-

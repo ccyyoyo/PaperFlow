@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/api/dialog";
+import { invoke } from "@tauri-apps/api/tauri";
 import { readBinaryFile } from "@tauri-apps/api/fs";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 import type {
@@ -9,6 +10,9 @@ import type {
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
 import "pdfjs-dist/web/pdf_viewer.css";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { NOTE_COLOR_OPTIONS, NoteColor } from "./noteColors";
+import { useViewerStore } from "../state/useViewerStore";
+import { useNotesStore } from "../state/useNotesStore";
 
 type PdfSource = {
   url: string;
@@ -27,14 +31,6 @@ type DraftNote = {
   page: number;
   selectedText: string;
   anchor: { x: number; y: number } | null;
-};
-
-type NoteColor = "idea" | "method" | "result";
-
-const NOTE_COLOR_OPTIONS: Record<NoteColor, { label: string; swatch: string }> = {
-  idea: { label: "靈感", swatch: "#facc15" },
-  method: { label: "方法", swatch: "#38bdf8" },
-  result: { label: "結果", swatch: "#f472b6" },
 };
 
 const isTauriRuntime =
@@ -112,11 +108,8 @@ function getSourceKey(ref: { originalPath?: string; label: string }) {
 async function createTauriPdfUrl(path: string) {
   const data = await readBinaryFile(path);
   const blob = new Blob([new Uint8Array(data)], { type: "application/pdf" });
-  const objectUrl = URL.createObjectURL(blob);
-  return {
-    url: objectUrl,
-    cleanup: () => URL.revokeObjectURL(objectUrl),
-  };
+  const url = URL.createObjectURL(blob);
+  return { url, cleanup: () => URL.revokeObjectURL(url) };
 }
 
 export function PdfViewer() {
@@ -125,10 +118,14 @@ export function PdfViewer() {
   const textLayerBuilderRef = useRef<any | null>(null);
   const viewportRef = useRef<PageViewport | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { currentPdf, setCurrentPdf, setViewState, viewState } = useViewerStore();
+  const addNote = useNotesStore((s) => s.addNote);
+  const setNotes = useNotesStore((s) => s.setNotes);
+  const upsertNoteInStore = useNotesStore((s) => s.upsertNote);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
-  const [pageNumber, setPageNumber] = useState(1);
+  const [pageNumberState, setPageNumberState] = useState(viewState.page ?? 1);
   const [pageCount, setPageCount] = useState(0);
-  const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [scaleState, setScaleState] = useState(viewState.scale ?? DEFAULT_SCALE);
   const [pageInput, setPageInput] = useState("1");
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>(
     () => readRecentFiles()
@@ -136,12 +133,10 @@ export function PdfViewer() {
   const [lastPageMap, setLastPageMap] = useState<Record<string, number>>(
     () => readLastPageMap()
   );
-
-  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">(
-    "idle"
-  );
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [source, setSource] = useState<PdfSource | null>(null);
+
+  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [draftNote, setDraftNote] = useState<DraftNote | null>(null);
   const [isEditorOpen, setEditorOpen] = useState(false);
@@ -152,20 +147,43 @@ export function PdfViewer() {
   const [noteStatus, setNoteStatus] = useState<"idle" | "info">("idle");
   const [noteMessage, setNoteMessage] = useState<string | null>(null);
 
+  const pageNumber = pageNumberState;
+  const scale = scaleState;
+
+  const updatePageNumber = useCallback(
+    (value: number) => {
+      setPageNumberState(value);
+      setViewState({ page: value });
+    },
+    [setViewState]
+  );
+
+  const updateScale = useCallback(
+    (value: number) => {
+      setScaleState(value);
+      setViewState({ scale: value });
+    },
+    [setViewState]
+  );
+
   const renderPage = useCallback(
     async (doc: PDFDocumentProxy, page: number, pageScale: number) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
 
       const pdfPage: PDFPageProxy = await doc.getPage(page);
-      const viewport = pdfPage.getViewport({ scale: pageScale });
+      const safeScale = Math.max(MIN_SCALE, Math.abs(pageScale || DEFAULT_SCALE));
+      const viewport = pdfPage.getViewport({ scale: safeScale });
       viewportRef.current = viewport;
 
       const context = canvas.getContext("2d");
       if (!context) return;
 
+      // Ensure no residual transforms from previous renders
       canvas.width = viewport.width;
       canvas.height = viewport.height;
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
 
       await pdfPage.render({ canvasContext: context, viewport }).promise;
 
@@ -217,8 +235,15 @@ export function PdfViewer() {
   }, []);
 
   const loadPdf = useCallback(
-    async (pdfSource: PdfSource) => {
-      if (source?.cleanup) {
+    async (
+      pdfSource: PdfSource,
+      options?: { preserveView?: boolean; touchRecent?: boolean; updateStore?: boolean }
+    ) => {
+      const preserveView = Boolean(options?.preserveView);
+      const touchRecent = options?.touchRecent !== false; // default true
+      const updateStore = options?.updateStore !== false; // default true
+      // Avoid revoking the same blob URL when rehydrating with the same source
+      if (source?.cleanup && source.url !== pdfSource.url) {
         source.cleanup();
       }
 
@@ -232,15 +257,18 @@ export function PdfViewer() {
 
         const key = getSourceKey(pdfSource);
         const savedPage = lastPageMap[key];
-        const initialPage = savedPage
-          ? clamp(savedPage, 1, doc.numPages)
-          : 1;
+        const initialPage = savedPage ? clamp(savedPage, 1, doc.numPages) : 1;
 
         setPdfDocument(doc);
         setPageCount(doc.numPages);
-        setScale(DEFAULT_SCALE);
-        setPageNumber(initialPage);
-        setPageInput(initialPage.toString());
+        if (!preserveView) {
+          updateScale(DEFAULT_SCALE);
+          updatePageNumber(initialPage);
+          setPageInput(initialPage.toString());
+        } else {
+          // keep existing view settings (page/scale) from store/local state
+          setPageInput((viewState.page ?? 1).toString());
+        }
         setStatus("ready");
 
         setDraftNote(null);
@@ -250,16 +278,65 @@ export function PdfViewer() {
         setNoteTags([]);
         setNoteTagInput("");
 
-        updateRecentFiles({
-          label: pdfSource.label,
-          path: pdfSource.originalPath ?? null,
-          openedAt: Date.now(),
-        });
+        if (touchRecent) {
+          updateRecentFiles({
+            label: pdfSource.label,
+            path: pdfSource.originalPath ?? null,
+            openedAt: Date.now(),
+          });
+        }
+
+        let resolvedPdfId = key; // default: path or label
+        // If running in Tauri and we have a file path, ensure paper exists and use its id
+        if (updateStore && isTauriRuntime && pdfSource.originalPath) {
+          try {
+            const paper = await invoke<any>("upsert_paper_command", {
+              title: pdfSource.label,
+              path: pdfSource.originalPath,
+            });
+            if (paper?.id) {
+              resolvedPdfId = String(paper.id);
+              // Load notes for this paper from backend
+              const backendNotes = await invoke<any>("list_notes_command", {
+                paperId: resolvedPdfId,
+              });
+              if (Array.isArray(backendNotes)) {
+                const mapped = backendNotes.map((n: any) => ({
+                  id: String(n.id),
+                  pdfId: String(n.paperId ?? resolvedPdfId),
+                  page: Number(n.page ?? 1),
+                  content: String(n.content ?? ""),
+                  color: (n.color ?? "idea") as NoteColor,
+                  tags: String(n.tags ?? "")
+                    .split(",")
+                    .map((t) => t.trim())
+                    .filter(Boolean),
+                  updatedAt: String(n.updatedAt ?? new Date().toISOString()),
+                  anchor: { x: Number(n.x ?? 0), y: Number(n.y ?? 0) },
+                }));
+                setNotes(resolvedPdfId, mapped);
+              }
+            }
+          } catch (e) {
+            console.warn("Unable to upsert paper or list notes", e);
+          }
+        }
+
+        if (updateStore) {
+          setCurrentPdf({
+            id: resolvedPdfId,
+            path: pdfSource.originalPath ?? null,
+            name: pdfSource.label,
+            blobUrl: pdfSource.url,
+            totalPages: doc.numPages,
+            lastOpenedAt: new Date().toISOString(),
+          });
+        }
       } catch (error) {
         console.error("Failed to load PDF", error);
         setErrorMessage("無法載入 PDF，請再試一次或選擇其他檔案。");
         setPdfDocument(null);
-        setPageNumber(1);
+        updatePageNumber(1);
         setPageCount(0);
         setStatus("error");
       }
@@ -272,13 +349,21 @@ export function PdfViewer() {
     renderPage(pdfDocument, pageNumber, scale);
   }, [pdfDocument, pageNumber, renderPage, scale, status]);
 
+  // When the viewer mounts (e.g., after tab switch), if there's already a currentPdf
+  // in the shared store, reload it without resetting view (page/scale) or recent list.
   useEffect(() => {
-    return () => {
-      if (source?.cleanup) {
-        source.cleanup();
-      }
-    };
-  }, [source]);
+    if (!pdfDocument && currentPdf && status === "idle") {
+      loadPdf(
+        {
+          url: currentPdf.blobUrl,
+          label: currentPdf.name,
+          originalPath: currentPdf.path ?? undefined,
+        },
+        { preserveView: true, touchRecent: false }
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPdf]);
 
   useEffect(() => {
     setPageInput(pageNumber.toString());
@@ -347,11 +432,11 @@ export function PdfViewer() {
   };
 
   const handlePrevPage = () => {
-    setPageNumber((prev) => Math.max(1, prev - 1));
+    updatePageNumber(Math.max(1, pageNumber - 1));
   };
 
   const handleNextPage = () => {
-    setPageNumber((prev) => Math.min(pageCount, prev + 1));
+    updatePageNumber(Math.min(pageCount, pageNumber + 1));
   };
 
   const handlePageSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -359,19 +444,21 @@ export function PdfViewer() {
     if (status !== "ready") return;
     const parsed = Number.parseInt(pageInput, 10);
     if (Number.isNaN(parsed)) return;
-    setPageNumber(clamp(parsed, 1, pageCount));
+    updatePageNumber(clamp(parsed, 1, pageCount));
   };
 
   const handleZoomIn = () => {
-    setScale((prev) => Math.min(MAX_SCALE, Number((prev + SCALE_STEP).toFixed(2))));
+    const next = Math.min(MAX_SCALE, Number((scale + SCALE_STEP).toFixed(2)));
+    updateScale(next);
   };
 
   const handleZoomOut = () => {
-    setScale((prev) => Math.max(MIN_SCALE, Number((prev - SCALE_STEP).toFixed(2))));
+    const next = Math.max(MIN_SCALE, Number((scale - SCALE_STEP).toFixed(2)));
+    updateScale(next);
   };
 
   const handleZoomReset = () => {
-    setScale(DEFAULT_SCALE);
+    updateScale(DEFAULT_SCALE);
   };
 
   const handleTextSelection = useCallback(() => {
@@ -437,7 +524,7 @@ export function PdfViewer() {
     setNoteMessage(null);
   };
 
-  const handleSaveNote = () => {
+  const handleSaveNote = async () => {
     const trimmed = noteContent.trim();
     if (!trimmed) {
       setNoteStatus("info");
@@ -445,8 +532,62 @@ export function PdfViewer() {
       return;
     }
 
-    setNoteStatus("info");
-    setNoteMessage("筆記儲存流程將在後續版本與後端整合。");
+    if (!currentPdf) {
+      setNoteStatus("info");
+      setNoteMessage("請先選擇並載入一份 PDF。");
+      return;
+    }
+
+    const anchor = draftNote?.anchor ?? { x: 0, y: 0 };
+    const pageForNote = draftNote?.page ?? pageNumber;
+
+    if (isTauriRuntime && currentPdf.path) {
+      try {
+        const created = await invoke<any>("create_note_command", {
+          input: {
+            paperId: currentPdf.id,
+            page: pageForNote,
+            x: anchor?.x ?? 0,
+            y: anchor?.y ?? 0,
+            textHash: null,
+            content: trimmed,
+            color: noteColor,
+            tags: noteTags.join(","),
+          },
+        });
+        const mapped = {
+          id: String(created.id),
+          pdfId: currentPdf.id,
+          page: Number(created.page ?? pageForNote),
+          content: String(created.content ?? trimmed),
+          color: (created.color ?? noteColor) as NoteColor,
+          tags: String(created.tags ?? noteTags.join(","))
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean),
+          updatedAt: String(created.updatedAt ?? new Date().toISOString()),
+          anchor: { x: Number(created.x ?? anchor?.x ?? 0), y: Number(created.y ?? anchor?.y ?? 0) },
+        };
+        upsertNoteInStore(currentPdf.id, mapped);
+        // Close editor after successful save
+        handleCancelNote();
+        return;
+      } catch (e) {
+        console.warn("Failed to create note via backend; falling back to memory", e);
+      }
+    }
+
+    // Fallback: local only
+    addNote({
+      pdfId: currentPdf.id,
+      page: pageForNote,
+      content: trimmed,
+      color: noteColor,
+      tags: noteTags,
+      anchor,
+    });
+    // Close editor after successful save (local)
+    handleCancelNote();
   };
 
   const handleTagKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
