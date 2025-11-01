@@ -20,6 +20,10 @@ interface ViewerState {
   setCurrentPdf: (pdf: CurrentPdf) => void;
   clearCurrentPdf: () => void;
   setViewState: (patch: Partial<ViewState>) => void;
+  // Jump/marker helpers
+  jumpAnchor: { x: number; y: number; token: number } | null;
+  flashJumpAnchor: (anchor: { x: number; y: number }) => void;
+  clearJumpAnchor: () => void;
 }
 
 export const DEFAULT_VIEW_STATE: ViewState = {
@@ -30,6 +34,7 @@ export const DEFAULT_VIEW_STATE: ViewState = {
 export const useViewerStore = create<ViewerState>((set, get) => ({
   currentPdf: null,
   viewState: DEFAULT_VIEW_STATE,
+  jumpAnchor: null,
   setCurrentPdf: (pdf) => {
     const previous = get().currentPdf;
     const changed = previous?.blobUrl !== pdf.blobUrl;
@@ -55,4 +60,9 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   setViewState: (patch) => {
     set((state) => ({ viewState: { ...state.viewState, ...patch } }));
   },
+  flashJumpAnchor: (anchor) => {
+    const token = Date.now();
+    set({ jumpAnchor: { ...anchor, token } });
+  },
+  clearJumpAnchor: () => set({ jumpAnchor: null }),
 }));

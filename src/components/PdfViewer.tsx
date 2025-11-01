@@ -13,6 +13,7 @@ import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { NOTE_COLOR_OPTIONS, NoteColor } from "./noteColors";
 import { useViewerStore } from "../state/useViewerStore";
 import { useNotesStore } from "../state/useNotesStore";
+import { useTaxonomyStore } from "../state/useTaxonomyStore";
 
 type PdfSource = {
   url: string;
@@ -55,6 +56,21 @@ function extractFileName(path: string) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function normalizeSelectedText(input: string) {
+  try {
+    return input
+      .replace(/\u00AD/g, "") // soft hyphen
+      .replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, "") // zero-widths
+      .replace(/\u00A0/g, " ") // nbsp -> space
+      .normalize("NFKC")
+      .replace(/[\t\r\n]+/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  } catch {
+    return input.trim();
+  }
 }
 
 function readRecentFiles(): RecentFile[] {
@@ -122,6 +138,15 @@ export function PdfViewer() {
   const addNote = useNotesStore((s) => s.addNote);
   const setNotes = useNotesStore((s) => s.setNotes);
   const upsertNoteInStore = useNotesStore((s) => s.upsertNote);
+  const taxonomyColors = useTaxonomyStore((s) => s.colors);
+  const colorOptions = useMemo(() => {
+    const entries = Object.keys(taxonomyColors ?? {}).length
+      ? taxonomyColors
+      : Object.fromEntries(
+          Object.entries(NOTE_COLOR_OPTIONS).map(([id, v]) => [id, { id, label: v.label, swatch: v.swatch }])
+        );
+    return entries as Record<string, { id: string; label: string; swatch: string }>;
+  }, [taxonomyColors]);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [pageNumberState, setPageNumberState] = useState(viewState.page ?? 1);
   const [pageCount, setPageCount] = useState(0);
@@ -146,9 +171,41 @@ export function PdfViewer() {
   const [noteTagInput, setNoteTagInput] = useState("");
   const [noteStatus, setNoteStatus] = useState<"idle" | "info">("idle");
   const [noteMessage, setNoteMessage] = useState<string | null>(null);
-
+  const jumpAnchor = useViewerStore((s) => s.jumpAnchor);
+  const [marker, setMarker] = useState<{ x: number; y: number } | null>(null);
+  // Derived view values (keep above selectors that depend on them)
   const pageNumber = pageNumberState;
   const scale = scaleState;
+  const notesForPdf = useNotesStore((s) =>
+    currentPdf ? s.getNotes(currentPdf.id) : []
+  );
+  const [notesScope, setNotesScope] = useState<"page" | "all">("page");
+  const visibleNotes = useMemo(() => {
+    const list = notesForPdf;
+    return notesScope === "page" ? list.filter((n) => n.page === pageNumber) : list;
+  }, [notesForPdf, notesScope, pageNumber]);
+
+  // Quick edit state for sidebar notes
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [editColor, setEditColor] = useState<string>("idea");
+  const [editTags, setEditTags] = useState<string[]>([]);
+  const [editTagInput, setEditTagInput] = useState("");
+
+  const beginEdit = (n: any) => {
+    setEditingId(n.id);
+    setEditContent(n.content ?? "");
+    setEditColor(n.color ?? "idea");
+    setEditTags(Array.isArray(n.tags) ? n.tags : []);
+    setEditTagInput("");
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditContent("");
+    setEditColor("idea");
+    setEditTags([]);
+    setEditTagInput("");
+  };
 
   const updatePageNumber = useCallback(
     (value: number) => {
@@ -173,7 +230,8 @@ export function PdfViewer() {
 
       const pdfPage: PDFPageProxy = await doc.getPage(page);
       const safeScale = Math.max(MIN_SCALE, Math.abs(pageScale || DEFAULT_SCALE));
-      const viewport = pdfPage.getViewport({ scale: safeScale });
+      const rotation = (pdfPage as any)?.rotate ?? 0; // keep the page's inherent rotation
+      const viewport = pdfPage.getViewport({ scale: safeScale, rotation, dontFlip: false as any });
       viewportRef.current = viewport;
 
       const context = canvas.getContext("2d");
@@ -184,6 +242,8 @@ export function PdfViewer() {
       canvas.height = viewport.height;
       context.setTransform(1, 0, 0, 1, 0, 0);
       context.clearRect(0, 0, canvas.width, canvas.height);
+      // Ensure no CSS transforms are applied
+      (canvas as HTMLCanvasElement).style.transform = "none";
 
       await pdfPage.render({ canvasContext: context, viewport }).promise;
 
@@ -221,6 +281,14 @@ export function PdfViewer() {
     []
   );
 
+  // Flash a marker when a jump anchor request is emitted
+  useEffect(() => {
+    if (!jumpAnchor) return;
+    setMarker({ x: jumpAnchor.x, y: jumpAnchor.y });
+    const t = setTimeout(() => setMarker(null), 1600);
+    return () => clearTimeout(t);
+  }, [jumpAnchor?.token]);
+
   const updateRecentFiles = useCallback((entry: RecentFile) => {
     setRecentFiles((previous) => {
       const filtered = previous.filter((item) =>
@@ -252,7 +320,7 @@ export function PdfViewer() {
       setSource(pdfSource);
 
       try {
-        const task = getDocument(pdfSource.url);
+        const task = getDocument({ url: pdfSource.url });
         const doc = await task.promise;
 
         const key = getSourceKey(pdfSource);
@@ -477,7 +545,7 @@ export function PdfViewer() {
       return;
     }
 
-    const text = selection.toString().trim();
+    const text = normalizeSelectedText(selection.toString());
     if (!text) return;
 
     const range = selection.getRangeAt(0);
@@ -744,6 +812,15 @@ export function PdfViewer() {
                   onTouchEnd={handleTextSelection}
                   role="presentation"
                 />
+                {marker && (
+                  <div
+                    className="pdf-viewer__jump-marker"
+                    style={{
+                      left: `${(marker.x || 0) * (canvasRef.current?.width || 0)}px`,
+                      top: `${(marker.y || 0) * (canvasRef.current?.height || 0)}px`,
+                    }}
+                  />
+                )}
               </div>
             ) : (
               <div className="pdf-viewer__placeholder">
@@ -752,6 +829,210 @@ export function PdfViewer() {
             )}
           </div>
         </div>
+        <aside className="pdf-viewer__notes">
+          <header className="pdf-viewer__notes-header">
+            <h3>筆記</h3>
+            <div className="pdf-viewer__notes-controls">
+              <button
+                type="button"
+                className={`pdf-viewer__button pdf-viewer__button--ghost ${notesScope === "page" ? "pdf-viewer__button--active" : ""}`}
+                onClick={() => setNotesScope("page")}
+              >
+                本頁
+              </button>
+              <button
+                type="button"
+                className={`pdf-viewer__button pdf-viewer__button--ghost ${notesScope === "all" ? "pdf-viewer__button--active" : ""}`}
+                onClick={() => setNotesScope("all")}
+              >
+                全部
+              </button>
+            </div>
+          </header>
+          <div className="pdf-viewer__notes-body">
+            {currentPdf && visibleNotes.length === 0 && (
+              <p className="pdf-viewer__notes-empty">
+                {notesScope === "page" ? "本頁尚無筆記。" : "尚無筆記。"}
+              </p>
+            )}
+            <ul className="pdf-viewer__notes-list">
+              {visibleNotes.map((n) => (
+                <li key={n.id} className="pdf-viewer__note-row">
+                  <button
+                    type="button"
+                    className="pdf-viewer__note-row-button"
+                    onClick={() => {
+                      updatePageNumber(n.page);
+                      if (n.anchor) {
+                        setMarker({ x: n.anchor.x, y: n.anchor.y });
+                        setTimeout(() => setMarker(null), 1600);
+                      }
+                    }}
+                    title={`跳至第 ${n.page} 頁`}
+                  >
+                    <span
+                      className="pdf-viewer__note-row-swatch"
+                      style={{ background: (colorOptions[n.color]?.swatch as string) || "#6b7280" }}
+                    />
+                    <span className="pdf-viewer__note-row-main">
+                      <span className="pdf-viewer__note-row-title">第 {n.page} 頁</span>
+                      <span className="pdf-viewer__note-row-content">{n.content}</span>
+                      {n.tags.length > 0 && (
+                        <span className="pdf-viewer__note-row-tags">
+                          {n.tags.map((t) => (
+                            <em key={t}>#{t}</em>
+                          ))}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                  <div className="pdf-viewer__note-row-actions">
+                    {editingId === n.id ? (
+                      <>
+                        <button
+                          type="button"
+                          className="pdf-viewer__button pdf-viewer__button--ghost"
+                          onClick={async () => {
+                            if (!currentPdf) return;
+                            try {
+                              if (isTauriRuntime && currentPdf.path) {
+                                const updated = await invoke<any>("update_note_command", {
+                                  payload: {
+                                    id: n.id,
+                                    content: editContent,
+                                    color: editColor,
+                                    tags: editTags.join(","),
+                                  },
+                                });
+                                const mapped = {
+                                  id: String(updated.id ?? n.id),
+                                  pdfId: currentPdf.id,
+                                  page: Number(updated.page ?? n.page),
+                                  content: String(updated.content ?? editContent),
+                                  color: (updated.color ?? editColor) as NoteColor,
+                                  tags: String(updated.tags ?? editTags.join(","))
+                                    .split(",")
+                                    .map((t) => t.trim())
+                                    .filter(Boolean),
+                                  updatedAt: String(updated.updatedAt ?? new Date().toISOString()),
+                                  anchor: { x: Number(updated.x ?? n.anchor?.x ?? 0), y: Number(updated.y ?? n.anchor?.y ?? 0) },
+                                } as any;
+                                upsertNoteInStore(currentPdf.id, mapped);
+                              } else {
+                                upsertNoteInStore(currentPdf.id, {
+                                  ...n,
+                                  content: editContent,
+                                  color: editColor as any,
+                                  tags: editTags,
+                                  updatedAt: new Date().toISOString(),
+                                } as any);
+                              }
+                            } finally {
+                              cancelEdit();
+                            }
+                          }}
+                        >
+                          儲存
+                        </button>
+                        <button
+                          type="button"
+                          className="pdf-viewer__button pdf-viewer__button--ghost"
+                          onClick={cancelEdit}
+                        >
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="pdf-viewer__button pdf-viewer__button--ghost"
+                          onClick={() => beginEdit(n)}
+                        >
+                          編輯
+                        </button>
+                        <button
+                          type="button"
+                          className="pdf-viewer__button pdf-viewer__button--ghost"
+                          onClick={async () => {
+                            if (!currentPdf) return;
+                            if (!window.confirm("確定刪除此筆記？")) return;
+                            if (isTauriRuntime && currentPdf.path) {
+                              await invoke("delete_note_command", { noteId: n.id });
+                            }
+                            useNotesStore.getState().deleteNote(currentPdf.id, n.id);
+                          }}
+                        >
+                          刪除
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {editingId === n.id && (
+                    <div className="pdf-viewer__note-edit">
+                      <textarea
+                        value={editContent}
+                        onChange={(e) => setEditContent(e.target.value)}
+                        rows={3}
+                        placeholder="更新內容"
+                      />
+                      <div className="pdf-viewer__note-color-options">
+                        {Object.keys(colorOptions).map((key) => {
+                          const option = colorOptions[key];
+                          const isActive = editColor === key;
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              className={`pdf-viewer__note-color ${isActive ? "pdf-viewer__note-color--active" : ""}`}
+                              onClick={() => setEditColor(key)}
+                            >
+                              <span
+                                className="pdf-viewer__note-color-swatch"
+                                style={{ background: option.swatch }}
+                              />
+                              {option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="pdf-viewer__note-tags-input">
+                        {editTags.map((tag) => (
+                          <span key={tag} className="pdf-viewer__note-tag">
+                            {tag}
+                            <button
+                              type="button"
+                              className="pdf-viewer__note-tag-remove"
+                              onClick={() => setEditTags(editTags.filter((t) => t !== tag))}
+                              aria-label={`移除標籤 ${tag}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                        <input
+                          value={editTagInput}
+                          onChange={(e) => setEditTagInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === ",") {
+                              e.preventDefault();
+                              const v = editTagInput.trim();
+                              if (v && !editTags.includes(v)) setEditTags([...editTags, v]);
+                              setEditTagInput("");
+                            } else if (e.key === "Backspace" && editTagInput === "") {
+                              setEditTags((prev) => prev.slice(0, -1));
+                            }
+                          }}
+                          placeholder={editTags.length === 0 ? "輸入後按 Enter" : "新增標籤"}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </aside>
 
         {isEditorOpen && (
           <aside className="pdf-viewer__note-editor">
@@ -765,15 +1046,15 @@ export function PdfViewer() {
             <div className="pdf-viewer__note-colors">
               <span className="pdf-viewer__note-label">顏色分類</span>
               <div className="pdf-viewer__note-color-options">
-                {(Object.keys(NOTE_COLOR_OPTIONS) as NoteColor[]).map((key) => {
-                  const option = NOTE_COLOR_OPTIONS[key];
+                {Object.keys(colorOptions).map((key) => {
+                  const option = colorOptions[key];
                   const isActive = noteColor === key;
                   return (
                     <button
                       key={key}
                       type="button"
                       className={`pdf-viewer__note-color ${isActive ? "pdf-viewer__note-color--active" : ""}`}
-                      onClick={() => setNoteColor(key)}
+                      onClick={() => setNoteColor(key as NoteColor)}
                     >
                       <span
                         className="pdf-viewer__note-color-swatch"

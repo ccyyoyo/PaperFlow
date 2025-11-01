@@ -4,19 +4,34 @@ import "./noteManager.css";
 import { useViewerStore } from "../state/useViewerStore";
 import { useNotesStore, type Note as StoreNote } from "../state/useNotesStore";
 import { invoke } from "@tauri-apps/api/tauri";
+import { useUiStore } from "../state/useUiStore";
+import { useTaxonomyStore } from "../state/useTaxonomyStore";
 
 export function NoteManagerPage() {
   const currentPdf = useViewerStore((s) => s.currentPdf);
+  const setViewState = useViewerStore((s) => s.setViewState);
+  const flashJumpAnchor = useViewerStore((s) => s.flashJumpAnchor);
   const notes = useNotesStore((s) =>
     currentPdf ? s.getNotes(currentPdf.id) : []
   );
   const setNotes = useNotesStore((s) => s.setNotes);
   const upsertNote = useNotesStore((s) => s.upsertNote);
   const deleteNoteInStore = useNotesStore((s) => s.deleteNote);
-  const [colorFilter, setColorFilter] = useState<NoteColor | "all">("all");
+  const setActiveTab = useUiStore((s) => s.setActiveTab);
+  const taxonomyColors = useTaxonomyStore((s) => s.colors);
+  const colorOptions = useMemo(() => {
+    const entries = Object.keys(taxonomyColors ?? {}).length
+      ? taxonomyColors
+      : Object.fromEntries(
+          Object.entries(NOTE_COLOR_OPTIONS).map(([id, v]) => [id, { id, label: v.label, swatch: v.swatch }])
+        );
+    return entries as Record<string, { id: string; label: string; swatch: string }>;
+  }, [taxonomyColors]);
+  const [colorFilter, setColorFilter] = useState<string | "all">("all");
   const [keyword, setKeyword] = useState("");
   const [pageFilter, setPageFilter] = useState<string>("");
   const [sortKey, setSortKey] = useState<"page" | "updatedAt">("updatedAt");
+  const [filtersOpen, setFiltersOpen] = useState(true);
 
   const isTauriRuntime =
     typeof window !== "undefined" && Boolean((window as any).__TAURI_IPC__);
@@ -53,7 +68,7 @@ export function NoteManagerPage() {
 
   const filteredNotes = useMemo(() => {
     return notes.filter((note) => {
-      if (colorFilter !== "all" && note.color !== colorFilter) return false;
+      if (colorFilter !== "all" && note.color !== (colorFilter as any)) return false;
       if (pageFilter) {
         const pageNumber = Number(pageFilter);
         if (!Number.isNaN(pageNumber) && note.page !== pageNumber) return false;
@@ -74,7 +89,7 @@ export function NoteManagerPage() {
   }, [colorFilter, keyword, pageFilter, sortKey, notes]);
 
   return (
-    <section className="note-manager">
+    <section className="note-manager ui-card ui-section">
       <header className="note-manager__header">
         <div>
           <h1>筆記管理</h1>
@@ -84,21 +99,41 @@ export function NoteManagerPage() {
               : "請先在 PDF 閱讀頁選擇檔案，新增的筆記會顯示在此。"}
           </p>
         </div>
-        <div className="note-manager__controls">
-          <label>
-            顏色
-            <select
-              value={colorFilter}
-              onChange={(event) => setColorFilter(event.target.value as NoteColor | "all")}
-            >
-              <option value="all">全部</option>
-              {(Object.keys(NOTE_COLOR_OPTIONS) as NoteColor[]).map((key) => (
-                <option key={key} value={key}>
-                  {NOTE_COLOR_OPTIONS[key].label}
-                </option>
+        <div className={filtersOpen ? "note-manager__filters" : "note-manager__filters note-manager__filters--closed"}>
+          <div className="note-manager__filters-top">
+            <strong>篩選</strong>
+            <button type="button" className="ui-button ui-button--ghost" onClick={() => setFiltersOpen((v) => !v)}>
+              {filtersOpen ? "收合" : "展開"}
+            </button>
+          </div>
+          <div className="note-manager__controls">
+          <div className="note-manager__filter">
+            <span className="note-manager__filter-label">顏色</span>
+            <div className="note-manager__chips">
+              <button
+                type="button"
+                className={`note-manager__chip ${colorFilter === "all" ? "note-manager__chip--active" : ""}`}
+                onClick={() => setColorFilter("all")}
+              >
+                全部
+              </button>
+              {Object.keys(colorOptions).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`note-manager__chip ${colorFilter === key ? "note-manager__chip--active" : ""}`}
+                  onClick={() => setColorFilter(key)}
+                  title={colorOptions[key].label}
+                >
+                  <span
+                    className="note-manager__chip-swatch"
+                    style={{ background: colorOptions[key].swatch }}
+                  />
+                  {colorOptions[key].label}
+                </button>
               ))}
-            </select>
-          </label>
+            </div>
+          </div>
           <label>
             頁碼
             <input
@@ -118,19 +153,28 @@ export function NoteManagerPage() {
           </label>
           <label>
             排序
-            <select value={sortKey} onChange={(event) => setSortKey(event.target.value as "page" | "updatedAt")}>
+            <select value={sortKey} onChange={(event) => setSortKey(event.target.value as "page" | "updatedAt")}> 
               <option value="updatedAt">最後更新時間</option>
               <option value="page">頁碼</option>
             </select>
           </label>
+          </div>
         </div>
       </header>
 
+      <hr className="ui-divider" />
       <ul className="note-manager__list">
         {filteredNotes.map((note) => (
           <NoteRow
             key={note.id}
             note={note}
+            onJump={() => {
+              setViewState({ page: note.page });
+              if (note.anchor) {
+                flashJumpAnchor(note.anchor);
+              }
+              setActiveTab("viewer");
+            }}
             onUpdate={async (patch) => {
               const next = { ...note, ...patch };
               if (isTauriRuntime && currentPdf?.id) {
@@ -157,11 +201,17 @@ export function NoteManagerPage() {
                     anchor: { x: Number(updated.x ?? 0), y: Number(updated.y ?? 0) },
                   };
                   upsertNote(currentPdf.id, mapped);
+                  const { useToast } = await import("../state/useToast");
+                  useToast.getState().show("success", "筆記已更新");
                 } catch (e) {
                   console.warn("Failed to update note", e);
+                  const { useToast } = await import("../state/useToast");
+                  useToast.getState().show("error", "更新失敗");
                 }
               } else {
                 upsertNote(note.pdfId, next as any);
+                const { useToast } = await import("../state/useToast");
+                useToast.getState().show("success", "筆記已更新（本機）");
               }
             }}
             onDelete={async () => {
@@ -169,11 +219,17 @@ export function NoteManagerPage() {
                 try {
                   await invoke("delete_note_command", { noteId: note.id });
                   deleteNoteInStore(currentPdf.id, note.id);
+                  const { useToast } = await import("../state/useToast");
+                  useToast.getState().show("success", "筆記已刪除");
                 } catch (e) {
                   console.warn("Failed to delete note", e);
+                  const { useToast } = await import("../state/useToast");
+                  useToast.getState().show("error", "刪除失敗");
                 }
               } else {
                 deleteNoteInStore(note.pdfId, note.id);
+                const { useToast } = await import("../state/useToast");
+                useToast.getState().show("success", "筆記已刪除（本機）");
               }
             }}
           />
@@ -185,16 +241,26 @@ export function NoteManagerPage() {
 
 type RowProps = {
   note: StoreNote;
+  onJump: () => void;
   onUpdate: (patch: { content: string; color: NoteColor; tags: string[] }) => Promise<void> | void;
   onDelete: () => Promise<void> | void;
 };
 
-function NoteRow({ note, onUpdate, onDelete }: RowProps) {
+function NoteRow({ note, onJump, onUpdate, onDelete }: RowProps) {
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(note.content);
   const [color, setColor] = useState<NoteColor>(note.color);
   const [tags, setTags] = useState<string[]>(note.tags);
   const [tagInput, setTagInput] = useState("");
+  const taxonomyColors = useTaxonomyStore((s) => s.colors);
+  const colorOptions = useMemo(() => {
+    const entries = Object.keys(taxonomyColors ?? {}).length
+      ? taxonomyColors
+      : Object.fromEntries(
+          Object.entries(NOTE_COLOR_OPTIONS).map(([id, v]) => [id, { id, label: v.label, swatch: v.swatch }])
+        );
+    return entries as Record<string, { id: string; label: string; swatch: string }>;
+  }, [taxonomyColors]);
 
   const handleSave = async () => {
     await onUpdate({
@@ -219,7 +285,12 @@ function NoteRow({ note, onUpdate, onDelete }: RowProps) {
   };
 
   return (
-    <li className={`note-manager__item note-manager__item--${note.color}`}>
+    <li
+      className={`note-manager__item note-manager__item--${note.color} ui-card`}
+      style={{ borderLeft: `4px solid ${colorOptions[note.color]?.swatch || "#6b7280"}` }}
+      onDoubleClick={onJump}
+      title="雙擊跳至此筆記的位置"
+    >
       <header>
         <span className="note-manager__item-page">第 {note.page} 頁</span>
         <span className="note-manager__item-meta">
@@ -272,8 +343,8 @@ function NoteRow({ note, onUpdate, onDelete }: RowProps) {
         <span className="note-manager__item-color">
           {editing ? (
             <div className="note-manager__color-options">
-              {(Object.keys(NOTE_COLOR_OPTIONS) as NoteColor[]).map((key) => {
-                const opt = NOTE_COLOR_OPTIONS[key];
+              {Object.keys(colorOptions).map((key) => {
+                const opt = colorOptions[key];
                 const active = color === key;
                 return (
                   <button
@@ -282,7 +353,7 @@ function NoteRow({ note, onUpdate, onDelete }: RowProps) {
                     className={`note-manager__color-btn ${
                       active ? "note-manager__color-btn--active" : ""
                     }`}
-                    onClick={() => setColor(key)}
+                    onClick={() => setColor(key as NoteColor)}
                     title={opt.label}
                   >
                     <span
@@ -295,17 +366,23 @@ function NoteRow({ note, onUpdate, onDelete }: RowProps) {
               })}
             </div>
           ) : (
-            NOTE_COLOR_OPTIONS[note.color].label
+            <span className="note-manager__item-color-visual">
+              <span
+                className="note-manager__item-color-swatch"
+                style={{ background: colorOptions[note.color]?.swatch || "#6b7280" }}
+              />
+              {colorOptions[note.color]?.label ?? note.color}
+            </span>
           )}
         </span>
         {editing ? (
           <>
-            <button type="button" className="note-manager__item-button" onClick={handleSave}>
+            <button type="button" className="note-manager__item-button ui-button ui-button--primary" onClick={handleSave}>
               儲存
             </button>
             <button
               type="button"
-              className="note-manager__item-button"
+              className="note-manager__item-button ui-button ui-button--ghost"
               onClick={() => {
                 setEditing(false);
                 setContent(note.content);
@@ -321,15 +398,19 @@ function NoteRow({ note, onUpdate, onDelete }: RowProps) {
           <>
             <button
               type="button"
-              className="note-manager__item-button"
+              className="note-manager__item-button ui-button ui-button--ghost"
               onClick={() => setEditing(true)}
             >
               編輯
             </button>
             <button
               type="button"
-              className="note-manager__item-button note-manager__item-button--danger"
-              onClick={onDelete}
+              className="note-manager__item-button note-manager__item-button--danger ui-button ui-button--danger"
+              onClick={() => {
+                if (window.confirm("確定要刪除此筆記嗎？此動作無法復原。")) {
+                  onDelete();
+                }
+              }}
             >
               刪除
             </button>
