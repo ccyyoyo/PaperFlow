@@ -1,3 +1,7 @@
+/**
+ * 檔案說明：
+ * 應用主畫面與分頁切換容器，整合 PDF 檢視、筆記管理與分類管理。
+ */
 import { useUiStore } from "./state/useUiStore";
 import "./index.css";
 import { PdfViewer } from "./components/PdfViewer";
@@ -5,8 +9,15 @@ import { NoteManagerPage } from "./components/NoteManager";
 import { TaxonomyManager } from "./components/TaxonomyManager";
 import { ToastContainer } from "./components/Toast";
 
+/**
+ * App 元件：
+ * - 負責整體佈局與分頁切換
+ * - 整合 PDF 檢視器、筆記管理頁、分類管理頁
+ */
 export function App() {
+  // 目前啟用中的分頁
   const activeTab = useUiStore((s) => s.activeTab);
+  // 變更啟用分頁的動作
   const setActiveTab = useUiStore((s) => s.setActiveTab);
 
   return (
@@ -40,7 +51,7 @@ export function App() {
           {activeTab === "viewer"
             ? "選擇一個 PDF 檔案即可開始預覽。"
             : activeTab === "notes"
-            ? "集中整理、篩選與瀏覽所有筆記（即將串接後端）。"
+            ? "集中整理、篩選與瀏覽所有筆記。"
             : "管理顏色分類與標籤（自訂顏色、重新命名、刪除）"}
         </p>
       </header>

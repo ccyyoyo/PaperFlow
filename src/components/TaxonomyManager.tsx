@@ -1,20 +1,36 @@
+/**
+ * 檔案說明：
+ * 分類（顏色與標籤）管理頁面，提供新增、更新與刪除分類及標籤。
+ */
 import { useMemo, useState } from "react";
 import { useTaxonomyStore } from "../state/useTaxonomyStore";
 import { useUiStore } from "../state/useUiStore";
 import "./taxonomyManager.css";
 
+/**
+ * TaxonomyManager 元件：
+ * - 管理顏色分類（新增、命名、變更色票、刪除）
+ * - 管理文字標籤（新增、重新命名、刪除）
+ */
 export function TaxonomyManager() {
+  // 分類 Store 的狀態與操作介面
   const { colors, tags, addColor, updateColor, deleteColor, addTag, updateTag, deleteTag } =
     useTaxonomyStore();
+  // 以陣列呈現的顏色分類清單
   const colorList = useMemo(() => Object.values(colors), [colors]);
+  // 新增顏色的輸入欄位值
   const [newColorLabel, setNewColorLabel] = useState("");
+  // 新增顏色的色票值
   const [newColorSwatch, setNewColorSwatch] = useState("#8b5cf6");
+  // 建議色票
   const SUGGESTED = ["#f43f5e", "#fb923c", "#facc15", "#22c55e", "#38bdf8", "#a78bfa", "#f472b6", "#94a3b8"];
 
+  // 新增標籤輸入值與編輯狀態
   const [newTag, setNewTag] = useState("");
   const [editingTag, setEditingTag] = useState<string | null>(null);
   const [editingTagValue, setEditingTagValue] = useState("");
 
+  // 切換分頁用操作
   const setActiveTab = useUiStore((s) => s.setActiveTab);
 
   return (

@@ -1,7 +1,9 @@
+//! 模組說明：筆記（Note）資料結構與 CRUD 操作。
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// 筆記實體。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
@@ -18,6 +20,7 @@ pub struct Note {
   pub updated_at: Option<String>,
 }
 
+/// 新增筆記的輸入資料。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewNoteInput {
@@ -31,6 +34,7 @@ pub struct NewNoteInput {
   pub tags: Option<String>,
 }
 
+/// 更新筆記的輸入資料。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateNoteInput {
@@ -40,6 +44,7 @@ pub struct UpdateNoteInput {
   pub tags: Option<String>,
 }
 
+/// 建立一筆筆記並回傳完整筆記資料。
 pub fn create_note(conn: &Connection, input: NewNoteInput) -> Result<Note> {
   let id = Uuid::new_v4().to_string();
   conn.execute(
@@ -61,6 +66,7 @@ pub fn create_note(conn: &Connection, input: NewNoteInput) -> Result<Note> {
   fetch_note(conn, &id)
 }
 
+/// 依 Paper 識別列出其所有筆記，依頁碼與建立時間排序。
 pub fn list_notes_by_paper(conn: &Connection, paper_id: &str) -> Result<Vec<Note>> {
   let mut stmt = conn.prepare(
     "SELECT id, paper_id, page, x, y, text_hash, content, color, tags, created_at, updated_at
@@ -88,6 +94,7 @@ pub fn list_notes_by_paper(conn: &Connection, paper_id: &str) -> Result<Vec<Note
   iter.collect()
 }
 
+/// 更新指定筆記並回傳更新後資料。
 pub fn update_note(conn: &Connection, payload: UpdateNoteInput) -> Result<Note> {
   conn.execute(
     "UPDATE note
@@ -102,11 +109,13 @@ pub fn update_note(conn: &Connection, payload: UpdateNoteInput) -> Result<Note> 
   fetch_note(conn, &payload.id)
 }
 
+/// 刪除指定筆記。
 pub fn delete_note(conn: &Connection, note_id: &str) -> Result<()> {
   conn.execute("DELETE FROM note WHERE id = ?", params![note_id])?;
   Ok(())
 }
 
+/// 依 id 取回單筆筆記。
 fn fetch_note(conn: &Connection, note_id: &str) -> Result<Note> {
   conn.query_row(
     "SELECT id, paper_id, page, x, y, text_hash, content, color, tags, created_at, updated_at

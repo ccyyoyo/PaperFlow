@@ -1,18 +1,22 @@
+//! 模組說明：資料庫初始化與遷移（SQLite + rusqlite）。
 use rusqlite::{params, Connection};
 use std::{error::Error, fs, path::Path};
 
+/// 單一遷移的描述。
 struct Migration {
   version: i32,
   _name: &'static str,
   sql: &'static str,
 }
 
+/// 內建遷移清單（依版本升序）。
 const MIGRATIONS: &[Migration] = &[Migration {
   version: 1,
   _name: "init_schema",
   sql: include_str!("../sql/0001_init.sql"),
 }];
 
+/// 建立資料庫檔案、啟用外鍵並套用遷移，回傳連線。
 pub fn init_database(path: &Path) -> Result<Connection, Box<dyn Error>> {
   if let Some(parent) = path.parent() {
     fs::create_dir_all(parent)?;
@@ -24,6 +28,7 @@ pub fn init_database(path: &Path) -> Result<Connection, Box<dyn Error>> {
   Ok(conn)
 }
 
+/// 套用尚未執行的遷移版本。
 fn apply_migrations(conn: &mut Connection) -> Result<(), Box<dyn Error>> {
   conn.execute(
     "CREATE TABLE IF NOT EXISTS schema_version (

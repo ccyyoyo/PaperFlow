@@ -261,6 +261,26 @@ body {
   opacity: 0.65;
 }
 
+/* 骨架載入效果 */
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(90deg, rgba(120,130,150,0.15) 25%, rgba(220,230,255,0.18) 37%, rgba(120,130,150,0.15) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.2s linear infinite;
+  border-radius: 12px;
+}
+
+.skeleton.skeleton--text { height: 1rem; border-radius: 8px; }
+
+.pdf-viewer__skeleton { width: 100%; display: flex; align-items: center; justify-content: center; }
+.pdf-viewer__skeleton-page { width: min(100%, 860px); height: min(72vh, 980px); box-shadow: 0 10px 30px rgba(9, 13, 22, 0.45); }
+
 .pdf-viewer__body {
   display: flex;
   gap: 1.5rem;
@@ -576,3 +596,7 @@ body {
   font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
 }
+/*
+ * 檔案說明：
+ * 全域樣式與版面配置，並匯入共用 UI 樣式。
+ */

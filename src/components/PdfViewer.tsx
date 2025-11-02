@@ -1,3 +1,8 @@
+/**
+ * 檔案說明：
+ * PDF 檢視器元件，負責載入 PDF、渲染頁面、追蹤最近開啟與最後頁面，
+ * 並與筆記與分類狀態互動以建立、顯示與管理筆記。
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/api/dialog";
 import { invoke } from "@tauri-apps/api/tauri";
@@ -15,6 +20,7 @@ import { useViewerStore } from "../state/useViewerStore";
 import { useNotesStore } from "../state/useNotesStore";
 import { useTaxonomyStore } from "../state/useTaxonomyStore";
 
+/** PDF 資源來源描述：可包含 URL、標籤與清理回呼。 */
 type PdfSource = {
   url: string;
   label: string;
@@ -22,23 +28,28 @@ type PdfSource = {
   cleanup?: () => void;
 };
 
+/** 最近開啟檔案的紀錄結構。 */
 type RecentFile = {
   label: string;
   path: string | null;
   openedAt: number;
 };
 
+/** 編寫中的暫存筆記資料（頁碼、選取文字、錨點）。 */
 type DraftNote = {
   page: number;
   selectedText: string;
   anchor: { x: number; y: number } | null;
 };
 
+// 是否在 Tauri 執行環境
 const isTauriRuntime =
   typeof window !== "undefined" && Boolean((window as any).__TAURI_IPC__);
+// 是否可使用瀏覽器本地儲存
 const storageAvailable =
   typeof window !== "undefined" && typeof window.localStorage !== "undefined";
 
+// 本地儲存鍵與縮放設定
 const RECENT_FILES_KEY = "paperflow:recentFiles";
 const LAST_PAGE_KEY = "paperflow:lastPageMap";
 const MIN_SCALE = 0.5;
@@ -47,17 +58,21 @@ const SCALE_STEP = 0.25;
 const DEFAULT_SCALE = 1.25;
 const RECENT_LIMIT = 6;
 
+// 指定 PDF.js 的 Web Worker 來源
 GlobalWorkerOptions.workerSrc = workerSrc;
 
+/** 由路徑抽取檔名。 */
 function extractFileName(path: string) {
   const parts = path.split(/[/\\]/);
   return parts[parts.length - 1] ?? path;
 }
 
+/** 將數值限制於 [min, max] 範圍。 */
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+/** 正規化被選取的文字，移除零寬字元與多餘空白。 */
 function normalizeSelectedText(input: string) {
   try {
     return input
@@ -73,6 +88,7 @@ function normalizeSelectedText(input: string) {
   }
 }
 
+/** 自本地儲存讀取最近檔案清單。 */
 function readRecentFiles(): RecentFile[] {
   if (!storageAvailable) return [];
   try {
@@ -86,6 +102,7 @@ function readRecentFiles(): RecentFile[] {
   }
 }
 
+/** 將最近檔案清單寫入本地儲存。 */
 function persistRecentFiles(files: RecentFile[]) {
   if (!storageAvailable) return;
   try {
@@ -95,6 +112,7 @@ function persistRecentFiles(files: RecentFile[]) {
   }
 }
 
+/** 讀取各檔案最後閱讀頁碼的對照表。 */
 function readLastPageMap(): Record<string, number> {
   if (!storageAvailable) return {};
   try {
@@ -108,6 +126,7 @@ function readLastPageMap(): Record<string, number> {
   }
 }
 
+/** 寫入最後閱讀頁碼對照表至本地儲存。 */
 function persistLastPageMap(map: Record<string, number>) {
   if (!storageAvailable) return;
   try {
@@ -117,10 +136,14 @@ function persistLastPageMap(map: Record<string, number>) {
   }
 }
 
+/** 取得來源識別鍵（優先使用原始路徑）。 */
 function getSourceKey(ref: { originalPath?: string; label: string }) {
   return ref.originalPath ?? ref.label;
 }
 
+/**
+ * 在 Tauri 環境中由檔案路徑建立 Blob URL，供 PDF.js 載入。
+ */
 async function createTauriPdfUrl(path: string) {
   const data = await readBinaryFile(path);
   const blob = new Blob([new Uint8Array(data)], { type: "application/pdf" });
@@ -128,16 +151,32 @@ async function createTauriPdfUrl(path: string) {
   return { url, cleanup: () => URL.revokeObjectURL(url) };
 }
 
+/**
+ * PdfViewer 元件：
+ * - 載入與渲染 PDF 頁面
+ * - 管理縮放、頁碼、最近檔案、最後頁面
+ * - 與筆記/分類狀態互動以建立與檢視筆記
+ */
 export function PdfViewer() {
+  // 畫布參考：用於渲染目前頁面的位圖
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // 文字圖層容器：承載 PDF.js 產生的文字選取層
   const textLayerContainerRef = useRef<HTMLDivElement>(null);
+  // 文字圖層建構器參考：維持 PDF.js textLayer builder 實例
   const textLayerBuilderRef = useRef<any | null>(null);
+  // 目前頁面視窗資訊：包含尺寸與旋轉等
   const viewportRef = useRef<PageViewport | null>(null);
+  // 隱藏檔案輸入框：在非 Tauri 環境選檔使用
   const inputRef = useRef<HTMLInputElement>(null);
+  // 檢視器狀態：目前 PDF 與檢視狀態讀寫
   const { currentPdf, setCurrentPdf, setViewState, viewState } = useViewerStore();
+  // 筆記狀態操作：新增筆記
   const addNote = useNotesStore((s) => s.addNote);
+  // 筆記狀態操作：覆寫當前 PDF 的筆記清單
   const setNotes = useNotesStore((s) => s.setNotes);
+  // 筆記狀態操作：新增或更新單筆筆記
   const upsertNoteInStore = useNotesStore((s) => s.upsertNote);
+  // 分類（顏色）對照表
   const taxonomyColors = useTaxonomyStore((s) => s.colors);
   const colorOptions = useMemo(() => {
     const entries = Object.keys(taxonomyColors ?? {}).length
@@ -147,22 +186,32 @@ export function PdfViewer() {
         );
     return entries as Record<string, { id: string; label: string; swatch: string }>;
   }, [taxonomyColors]);
+  // 目前載入的 PDF 文件代理
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
+  // 內部頁碼狀態（同步至全域 viewState.page）
   const [pageNumberState, setPageNumberState] = useState(viewState.page ?? 1);
+  // 總頁數
   const [pageCount, setPageCount] = useState(0);
+  // 內部縮放狀態（同步至全域 viewState.scale）
   const [scaleState, setScaleState] = useState(viewState.scale ?? DEFAULT_SCALE);
+  // 頁碼輸入框內容
   const [pageInput, setPageInput] = useState("1");
+  // 最近開啟的檔案清單
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>(
     () => readRecentFiles()
   );
+  // 各來源最後閱讀頁碼對照表
   const [lastPageMap, setLastPageMap] = useState<Record<string, number>>(
     () => readLastPageMap()
   );
+  // 目前 PDF 來源（URL 與原始路徑等）
   const [source, setSource] = useState<PdfSource | null>(null);
 
+  // 載入狀態與錯誤訊息
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // 筆記編輯器相關狀態
   const [draftNote, setDraftNote] = useState<DraftNote | null>(null);
   const [isEditorOpen, setEditorOpen] = useState(false);
   const [noteContent, setNoteContent] = useState("");
@@ -171,14 +220,18 @@ export function PdfViewer() {
   const [noteTagInput, setNoteTagInput] = useState("");
   const [noteStatus, setNoteStatus] = useState<"idle" | "info">("idle");
   const [noteMessage, setNoteMessage] = useState<string | null>(null);
+  // 來自檢視器的跳點錨座標與臨時標記
   const jumpAnchor = useViewerStore((s) => s.jumpAnchor);
   const [marker, setMarker] = useState<{ x: number; y: number } | null>(null);
   // Derived view values (keep above selectors that depend on them)
+  // 導出目前頁碼（自本地 pageNumberState）
   const pageNumber = pageNumberState;
+  // 導出目前縮放（自本地 scaleState）
   const scale = scaleState;
   const notesForPdf = useNotesStore((s) =>
     currentPdf ? s.getNotes(currentPdf.id) : []
   );
+  // 筆記可見範圍（單頁/全部）
   const [notesScope, setNotesScope] = useState<"page" | "all">("page");
   const visibleNotes = useMemo(() => {
     const list = notesForPdf;
@@ -186,12 +239,14 @@ export function PdfViewer() {
   }, [notesForPdf, notesScope, pageNumber]);
 
   // Quick edit state for sidebar notes
+  // 側邊欄快速編輯狀態
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [editColor, setEditColor] = useState<string>("idea");
   const [editTags, setEditTags] = useState<string[]>([]);
   const [editTagInput, setEditTagInput] = useState("");
 
+  // 開始編輯指定筆記
   const beginEdit = (n: any) => {
     setEditingId(n.id);
     setEditContent(n.content ?? "");
@@ -199,6 +254,7 @@ export function PdfViewer() {
     setEditTags(Array.isArray(n.tags) ? n.tags : []);
     setEditTagInput("");
   };
+  // 取消編輯並重置快速編輯狀態
   const cancelEdit = () => {
     setEditingId(null);
     setEditContent("");
@@ -207,6 +263,7 @@ export function PdfViewer() {
     setEditTagInput("");
   };
 
+  // 更新頁碼，並同步至全域檢視狀態
   const updatePageNumber = useCallback(
     (value: number) => {
       setPageNumberState(value);
@@ -215,6 +272,7 @@ export function PdfViewer() {
     [setViewState]
   );
 
+  // 更新縮放倍率，並同步至全域檢視狀態
   const updateScale = useCallback(
     (value: number) => {
       setScaleState(value);
@@ -223,6 +281,7 @@ export function PdfViewer() {
     [setViewState]
   );
 
+  // 以當前文件、頁碼與倍率渲染頁面與文字圖層
   const renderPage = useCallback(
     async (doc: PDFDocumentProxy, page: number, pageScale: number) => {
       const canvas = canvasRef.current;
@@ -282,6 +341,7 @@ export function PdfViewer() {
   );
 
   // Flash a marker when a jump anchor request is emitted
+  // 當收到跳點請求時，短暫顯示視覺標記
   useEffect(() => {
     if (!jumpAnchor) return;
     setMarker({ x: jumpAnchor.x, y: jumpAnchor.y });
@@ -289,26 +349,33 @@ export function PdfViewer() {
     return () => clearTimeout(t);
   }, [jumpAnchor?.token]);
 
+  // 更新最近檔案清單：去重後前置並裁切至上限
   const updateRecentFiles = useCallback((entry: RecentFile) => {
     setRecentFiles((previous) => {
+      // 過濾相同來源項目（以 path 優先，否則以 label 判斷）
       const filtered = previous.filter((item) =>
         entry.path
           ? item.path !== entry.path
           : item.label !== entry.label || Boolean(item.path)
       );
+      // 新清單置頂新增項目並限制數量
       const next = [entry, ...filtered].slice(0, RECENT_LIMIT);
       persistRecentFiles(next);
       return next;
     });
   }, []);
 
+  // 載入 PDF：支援保留視圖、更新最近清單與同步全域狀態
   const loadPdf = useCallback(
     async (
       pdfSource: PdfSource,
       options?: { preserveView?: boolean; touchRecent?: boolean; updateStore?: boolean }
     ) => {
+      // 是否保留現有頁碼與縮放
       const preserveView = Boolean(options?.preserveView);
+      // 是否更新最近檔案清單（預設 true）
       const touchRecent = options?.touchRecent !== false; // default true
+      // 是否同步到共享 Store（預設 true）
       const updateStore = options?.updateStore !== false; // default true
       // Avoid revoking the same blob URL when rehydrating with the same source
       if (source?.cleanup && source.url !== pdfSource.url) {
@@ -412,6 +479,7 @@ export function PdfViewer() {
     [lastPageMap, source, updateRecentFiles]
   );
 
+  // 初次掛載或切換回檢視器時，若已有 currentPdf，嘗試復原顯示
   useEffect(() => {
     if (!pdfDocument || status !== "ready") return;
     renderPage(pdfDocument, pageNumber, scale);
@@ -433,12 +501,15 @@ export function PdfViewer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPdf]);
 
+  // 同步頁碼到輸入框字串
   useEffect(() => {
     setPageInput(pageNumber.toString());
   }, [pageNumber]);
 
+  // 在狀態就緒時記錄最後閱讀頁碼
   useEffect(() => {
     if (!source || status !== "ready") return;
+    // 每個來源的鍵（原始路徑優先）
     const key = getSourceKey(source);
     setLastPageMap((prev) => {
       const next = { ...prev, [key]: pageNumber };
@@ -447,8 +518,10 @@ export function PdfViewer() {
     });
   }, [pageNumber, source, status]);
 
+  // 編輯器開啟時監聽 Esc 關閉
   useEffect(() => {
     if (!isEditorOpen) return;
+    // 處理鍵盤事件（Esc 關閉編輯器）
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setEditorOpen(false);
@@ -459,14 +532,17 @@ export function PdfViewer() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isEditorOpen]);
 
+  // 點擊「開啟檔案」：在 Tauri 以原生選單選擇，否則觸發隱藏 input
   const handlePickClick = async () => {
     if (isTauriRuntime) {
+      // 以原生對話框選擇 PDF 檔
       const selected = await open({
         multiple: false,
         filters: [{ name: "PDF", extensions: ["pdf"] }],
       });
 
       if (typeof selected === "string") {
+        // 抽取顯示用檔名並建立 Blob URL
         const label = extractFileName(selected);
         const { url, cleanup } = await createTauriPdfUrl(selected);
         loadPdf({ url, label, originalPath: selected, cleanup });
@@ -478,12 +554,15 @@ export function PdfViewer() {
     inputRef.current?.click();
   };
 
+  // 處理瀏覽器檔案輸入（非 Tauri）
   const handleFileInput = async (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
+    // 取得使用者選取的第一個檔案
     const file = event.target.files?.[0];
     if (!file) return;
 
+    // 建立臨時 Blob URL 供 PDF.js 載入
     const url = URL.createObjectURL(file);
 
     loadPdf({
@@ -528,6 +607,31 @@ export function PdfViewer() {
   const handleZoomReset = () => {
     updateScale(DEFAULT_SCALE);
   };
+
+  // Keyboard shortcuts: ArrowLeft / ArrowRight to navigate pages
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (status !== "ready") return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const isEditable =
+        (target && (target as any).isContentEditable) ||
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT";
+      if (isEditable) return;
+
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        handlePrevPage();
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        handleNextPage();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [status, handlePrevPage, handleNextPage]);
 
   const handleTextSelection = useCallback(() => {
     const textLayerRoot = textLayerBuilderRef.current?.div;
@@ -597,12 +701,20 @@ export function PdfViewer() {
     if (!trimmed) {
       setNoteStatus("info");
       setNoteMessage("內容不可為空白");
+      try {
+        const { useToast } = await import("../state/useToast");
+        useToast.getState().show("error", "內容不可為空白");
+      } catch {}
       return;
     }
 
     if (!currentPdf) {
       setNoteStatus("info");
       setNoteMessage("請先選擇並載入一份 PDF。");
+      try {
+        const { useToast } = await import("../state/useToast");
+        useToast.getState().show("info", "請先選擇並載入一份 PDF");
+      } catch {}
       return;
     }
 
@@ -638,10 +750,18 @@ export function PdfViewer() {
         };
         upsertNoteInStore(currentPdf.id, mapped);
         // Close editor after successful save
+        try {
+          const { useToast } = await import("../state/useToast");
+          useToast.getState().show("success", "筆記已儲存");
+        } catch {}
         handleCancelNote();
         return;
       } catch (e) {
         console.warn("Failed to create note via backend; falling back to memory", e);
+        try {
+          const { useToast } = await import("../state/useToast");
+          useToast.getState().show("info", "後端儲存失敗，已暫存於本機");
+        } catch {}
       }
     }
 
@@ -655,6 +775,10 @@ export function PdfViewer() {
       anchor,
     });
     // Close editor after successful save (local)
+    try {
+      const { useToast } = await import("../state/useToast");
+      useToast.getState().show("success", "筆記已暫存於本機");
+    } catch {}
     handleCancelNote();
   };
 
@@ -802,7 +926,11 @@ export function PdfViewer() {
       <div className="pdf-viewer__body">
         <div className="pdf-viewer__document">
           <div className="pdf-viewer__canvas-wrapper">
-            {status === "ready" ? (
+            {status === "loading" ? (
+              <div className="pdf-viewer__skeleton">
+                <div className="skeleton pdf-viewer__skeleton-page" />
+              </div>
+            ) : status === "ready" ? (
               <div className="pdf-viewer__page">
                 <canvas ref={canvasRef} className="pdf-viewer__canvas" />
                 <div
@@ -927,6 +1055,10 @@ export function PdfViewer() {
                                   updatedAt: new Date().toISOString(),
                                 } as any);
                               }
+                              try {
+                                const { useToast } = await import("../state/useToast");
+                                useToast.getState().show("success", "筆記已更新");
+                              } catch {}
                             } finally {
                               cancelEdit();
                             }
@@ -958,9 +1090,19 @@ export function PdfViewer() {
                             if (!currentPdf) return;
                             if (!window.confirm("確定刪除此筆記？")) return;
                             if (isTauriRuntime && currentPdf.path) {
-                              await invoke("delete_note_command", { noteId: n.id });
+                              try {
+                                await invoke("delete_note_command", { noteId: n.id });
+                              } catch (e) {
+                                const { useToast } = await import("../state/useToast");
+                                useToast.getState().show("error", "刪除失敗");
+                                return;
+                              }
                             }
                             useNotesStore.getState().deleteNote(currentPdf.id, n.id);
+                            try {
+                              const { useToast } = await import("../state/useToast");
+                              useToast.getState().show("success", "筆記已刪除");
+                            } catch {}
                           }}
                         >
                           刪除

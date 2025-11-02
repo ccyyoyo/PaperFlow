@@ -1,6 +1,13 @@
+/**
+ * 檔案說明：
+ * 簡易 Toast 呈現容器，負責從狀態讀取訊息並顯示。
+ */
 import { useToast } from "../state/useToast";
 import "./toast.css";
 
+/**
+ * ToastContainer 元件：顯示目前佇列中的提示訊息，點擊可移除。
+ */
 export function ToastContainer() {
   const items = useToast((s) => s.items);
   const remove = useToast((s) => s.remove);
@@ -22,4 +29,3 @@ export function ToastContainer() {
     </div>
   );
 }
-

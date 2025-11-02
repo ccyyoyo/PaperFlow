@@ -1,7 +1,9 @@
+//! 模組說明：Paper（文件）資料結構與相關操作。
 use rusqlite::{params, Connection, Result};
 use serde::Serialize;
 use uuid::Uuid;
 
+/// 文件（Paper）實體。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Paper {
@@ -13,6 +15,7 @@ pub struct Paper {
   pub updated_at: Option<String>,
 }
 
+/// 確保存在預設工作區，並回傳其 id。
 pub fn ensure_default_workspace(conn: &Connection) -> Result<String> {
   let id: Option<String> = conn
     .query_row(
@@ -34,6 +37,7 @@ pub fn ensure_default_workspace(conn: &Connection) -> Result<String> {
   Ok("default".to_string())
 }
 
+/// 依檔案路徑查詢或新增 Paper，並回傳結果。
 pub fn upsert_paper_by_path(conn: &Connection, path: &str, title: &str) -> Result<Paper> {
   // Try fetch by path
   let existing: Option<Paper> = conn
@@ -81,7 +85,7 @@ pub fn upsert_paper_by_path(conn: &Connection, path: &str, title: &str) -> Resul
   )
 }
 
-// Helper to add Result::optional for rusqlite without the feature flag
+/// Helper：在未啟用對應 feature 時，為 rusqlite::Result 加上 optional()。
 trait OptionalRow<T> {
   fn optional(self) -> rusqlite::Result<Option<T>>;
 }
@@ -95,4 +99,3 @@ impl<T> OptionalRow<T> for rusqlite::Result<T> {
     }
   }
 }
-

@@ -1,3 +1,7 @@
+/**
+ * 檔案說明：
+ * 筆記管理頁面，提供筆記清單的載入、過濾、排序、編輯與刪除等功能。
+ */
 import { useEffect, useMemo, useState } from "react";
 import { NOTE_COLOR_OPTIONS, NoteColor } from "./noteColors";
 import "./noteManager.css";
@@ -7,17 +11,30 @@ import { invoke } from "@tauri-apps/api/tauri";
 import { useUiStore } from "../state/useUiStore";
 import { useTaxonomyStore } from "../state/useTaxonomyStore";
 
+/**
+ * NoteManagerPage 元件：
+ * - 讀取並顯示目前 PDF 的筆記清單
+ * - 依顏色、關鍵字、頁碼進行篩選與排序
+ * - 支援快速編輯、刪除與跳轉至對應頁面
+ */
 export function NoteManagerPage() {
+  // 目前開啟的 PDF
   const currentPdf = useViewerStore((s) => s.currentPdf);
+  // 設定檢視狀態（頁碼等）
   const setViewState = useViewerStore((s) => s.setViewState);
+  // 觸發跳點錨提示（回到檢視器時用）
   const flashJumpAnchor = useViewerStore((s) => s.flashJumpAnchor);
+  // 目前 PDF 的筆記清單
   const notes = useNotesStore((s) =>
     currentPdf ? s.getNotes(currentPdf.id) : []
   );
+  // 筆記狀態操作
   const setNotes = useNotesStore((s) => s.setNotes);
   const upsertNote = useNotesStore((s) => s.upsertNote);
   const deleteNoteInStore = useNotesStore((s) => s.deleteNote);
+  // UI 分頁切換
   const setActiveTab = useUiStore((s) => s.setActiveTab);
+  // 顏色分類對照
   const taxonomyColors = useTaxonomyStore((s) => s.colors);
   const colorOptions = useMemo(() => {
     const entries = Object.keys(taxonomyColors ?? {}).length
@@ -27,12 +44,14 @@ export function NoteManagerPage() {
         );
     return entries as Record<string, { id: string; label: string; swatch: string }>;
   }, [taxonomyColors]);
+  // 篩選與排序狀態
   const [colorFilter, setColorFilter] = useState<string | "all">("all");
   const [keyword, setKeyword] = useState("");
   const [pageFilter, setPageFilter] = useState<string>("");
   const [sortKey, setSortKey] = useState<"page" | "updatedAt">("updatedAt");
   const [filtersOpen, setFiltersOpen] = useState(true);
 
+  // 是否在 Tauri 執行環境
   const isTauriRuntime =
     typeof window !== "undefined" && Boolean((window as any).__TAURI_IPC__);
 
@@ -263,8 +282,14 @@ function NoteRow({ note, onJump, onUpdate, onDelete }: RowProps) {
   }, [taxonomyColors]);
 
   const handleSave = async () => {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      const { useToast } = await import("../state/useToast");
+      useToast.getState().show("error", "內容不可為空白");
+      return;
+    }
     await onUpdate({
-      content,
+      content: trimmed,
       color,
       tags,
     });

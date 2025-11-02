@@ -38,4 +38,7 @@
 .toast--error .toast__dot   { color: #ef5350; }
 
 .toast__text { font-size: 14px; }
-
+/*
+ * 檔案說明：
+ * Toast 通知樣式（內容、顏色與位置）。
+ */
