@@ -14,6 +14,11 @@ const MIGRATIONS: &[Migration] = &[Migration {
   version: 1,
   _name: "init_schema",
   sql: include_str!("../sql/0001_init.sql"),
+},
+Migration {
+  version: 2,
+  _name: "note_anchor_card_sidebar",
+  sql: include_str!("../sql/0002_note_anchor_card_sidebar.sql"),
 }];
 
 /// 建立資料庫檔案、啟用外鍵並套用遷移，回傳連線。

@@ -1,6 +1,6 @@
 /**
  * 檔案說明：
- * 筆記管理頁面，提供筆記清單的載入、過濾、排序、編輯與刪除等功能。
+ * 卡片管理頁面，提供卡片清單的載入、過濾、排序、編輯與刪除等功能。
  */
 import { useEffect, useMemo, useState } from "react";
 import { NOTE_COLOR_OPTIONS, NoteColor } from "./noteColors";
@@ -13,7 +13,7 @@ import { useTaxonomyStore } from "../state/useTaxonomyStore";
 
 /**
  * NoteManagerPage 元件：
- * - 讀取並顯示目前 PDF 的筆記清單
+ * - 讀取並顯示目前 PDF 的卡片清單
  * - 依顏色、關鍵字、頁碼進行篩選與排序
  * - 支援快速編輯、刪除與跳轉至對應頁面
  */
@@ -67,6 +67,7 @@ export function NoteManagerPage() {
             id: String(n.id),
             pdfId: String(n.paperId ?? currentPdf.id),
             page: Number(n.page ?? 1),
+            quote: n.quote != null ? String(n.quote) : null,
             content: String(n.content ?? ""),
             color: (n.color ?? "idea") as NoteColor,
             tags: String(n.tags ?? "")
@@ -74,7 +75,8 @@ export function NoteManagerPage() {
               .map((t) => t.trim())
               .filter(Boolean),
             updatedAt: String(n.updatedAt ?? new Date().toISOString()),
-            anchor: { x: Number(n.x ?? 0), y: Number(n.y ?? 0) },
+            anchorYTopNorm:
+              n.anchorYTopNorm != null ? Number(n.anchorYTopNorm) : null,
           }));
           setNotes(currentPdf.id, mapped);
         }
@@ -111,11 +113,11 @@ export function NoteManagerPage() {
     <section className="note-manager ui-card ui-section">
       <header className="note-manager__header">
         <div>
-          <h1>筆記管理</h1>
+          <h1>卡片管理</h1>
           <p>
             {currentPdf
               ? `目前檔案：${currentPdf.name}（共 ${currentPdf.totalPages} 頁）`
-              : "請先在 PDF 閱讀頁選擇檔案，新增的筆記會顯示在此。"}
+              : "請先在 PDF 閱讀頁選擇檔案，新增的卡片會顯示在此。"}
           </p>
         </div>
         <div className={filtersOpen ? "note-manager__filters" : "note-manager__filters note-manager__filters--closed"}>
@@ -189,8 +191,8 @@ export function NoteManagerPage() {
             note={note}
             onJump={() => {
               setViewState({ page: note.page });
-              if (note.anchor) {
-                flashJumpAnchor(note.anchor);
+              if (note.anchorYTopNorm != null) {
+                flashJumpAnchor({ x: 0.5, y: note.anchorYTopNorm });
               }
               setActiveTab("viewer");
             }}
@@ -206,23 +208,27 @@ export function NoteManagerPage() {
                       tags: next.tags.join(","),
                     },
                   });
-                  const mapped = {
-                    id: String(updated.id ?? note.id),
-                    pdfId: currentPdf.id,
-                    page: Number(updated.page ?? note.page),
-                    content: String(updated.content ?? next.content),
-                    color: (updated.color ?? next.color) as NoteColor,
-                    tags: String(updated.tags ?? next.tags.join(","))
-                      .split(",")
-                      .map((t) => t.trim())
-                      .filter(Boolean),
-                    updatedAt: String(updated.updatedAt ?? new Date().toISOString()),
-                    anchor: { x: Number(updated.x ?? 0), y: Number(updated.y ?? 0) },
-                  };
-                  upsertNote(currentPdf.id, mapped);
-                  const { useToast } = await import("../state/useToast");
-                  useToast.getState().show("success", "筆記已更新");
-                } catch (e) {
+                   const mapped = {
+                     id: String(updated.id ?? note.id),
+                     pdfId: currentPdf.id,
+                     page: Number(updated.page ?? note.page),
+                     quote: updated.quote != null ? String(updated.quote) : note.quote ?? null,
+                     content: String(updated.content ?? next.content),
+                     color: (updated.color ?? next.color) as NoteColor,
+                     tags: String(updated.tags ?? next.tags.join(","))
+                       .split(",")
+                       .map((t) => t.trim())
+                       .filter(Boolean),
+                     updatedAt: String(updated.updatedAt ?? new Date().toISOString()),
+                     anchorYTopNorm:
+                       updated.anchorYTopNorm != null
+                         ? Number(updated.anchorYTopNorm)
+                         : note.anchorYTopNorm ?? null,
+                   };
+                   upsertNote(currentPdf.id, mapped);
+                   const { useToast } = await import("../state/useToast");
+                   useToast.getState().show("success", "卡片已更新");
+                 } catch (e) {
                   console.warn("Failed to update note", e);
                   const { useToast } = await import("../state/useToast");
                   useToast.getState().show("error", "更新失敗");
@@ -230,7 +236,7 @@ export function NoteManagerPage() {
               } else {
                 upsertNote(note.pdfId, next as any);
                 const { useToast } = await import("../state/useToast");
-                useToast.getState().show("success", "筆記已更新（本機）");
+                useToast.getState().show("success", "卡片已更新（本機）");
               }
             }}
             onDelete={async () => {
@@ -239,7 +245,7 @@ export function NoteManagerPage() {
                   await invoke("delete_note_command", { noteId: note.id });
                   deleteNoteInStore(currentPdf.id, note.id);
                   const { useToast } = await import("../state/useToast");
-                  useToast.getState().show("success", "筆記已刪除");
+                  useToast.getState().show("success", "卡片已刪除");
                 } catch (e) {
                   console.warn("Failed to delete note", e);
                   const { useToast } = await import("../state/useToast");
@@ -248,7 +254,7 @@ export function NoteManagerPage() {
               } else {
                 deleteNoteInStore(note.pdfId, note.id);
                 const { useToast } = await import("../state/useToast");
-                useToast.getState().show("success", "筆記已刪除（本機）");
+                useToast.getState().show("success", "卡片已刪除（本機）");
               }
             }}
           />
@@ -314,7 +320,7 @@ function NoteRow({ note, onJump, onUpdate, onDelete }: RowProps) {
       className={`note-manager__item note-manager__item--${note.color} ui-card`}
       style={{ borderLeft: `4px solid ${colorOptions[note.color]?.swatch || "#6b7280"}` }}
       onDoubleClick={onJump}
-      title="雙擊跳至此筆記的位置"
+      title="雙擊跳至此卡片的位置"
     >
       <header>
         <span className="note-manager__item-page">第 {note.page} 頁</span>
@@ -432,7 +438,7 @@ function NoteRow({ note, onJump, onUpdate, onDelete }: RowProps) {
               type="button"
               className="note-manager__item-button note-manager__item-button--danger ui-button ui-button--danger"
               onClick={() => {
-                if (window.confirm("確定要刪除此筆記嗎？此動作無法復原。")) {
+                if (window.confirm("確定要刪除此卡片嗎？此動作無法復原。")) {
                   onDelete();
                 }
               }}

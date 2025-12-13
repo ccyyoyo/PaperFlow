@@ -56,28 +56,35 @@ paper(id TEXT PRIMARY KEY, workspaceId TEXT, title TEXT, path TEXT, doi TEXT)
 &gt; 不跳出閱讀節奏，筆記與段落一一對應。
 
 * 選取文字 → 立即彈出筆記框
-* 筆記自動記錄頁碼、座標、原文字內容
+* 筆記自動記錄頁碼、錨點（用於卡片對齊）、原文字內容
 * 點筆記可高亮原段落
 * 支援 Markdown + 富文本編輯（TipTap）
 * 筆記分顏色（方法 / 結果 / 靈感）
+
+#### 筆記卡片側欄（Card Sidebar）
+&gt; 以「卡片」方式瀏覽筆記，並可選擇跟隨 PDF 或獨立瀏覽。
+
+* **分開模式（Free）**：側欄可自由捲動；點卡片可跳回 PDF 對應頁面。
+* **對齊模式（Follow / 對齊）**：按下「對齊」會回到目前 PDF 頁面的卡片並開始跟隨（卡片頂端與選取文字上緣對齊）。
 
 🧱 **Rust 模組建議**
 
 ```rust
 // pdf_note_anchor.rs
-// 將座標(x, y) 與頁面 hash 存入資料庫，防止渲染後位移。
+// 最小錨點：只需要垂直對齊（不覆蓋在文字上）。
+// y_top_norm 為 0~1：相對於該頁高度的選取文字上緣位置。
 pub struct NoteAnchor {
   pub page: i32,
-  pub x: f32,
-  pub y: f32,
-  pub text_hash: String,
+  pub y_top_norm: f32,
+  pub pdf_fingerprint: String,
+  pub quote: Option<String>,
 }
 ```
 
 📂 **資料表**
 
 ```sql
-note(id TEXT, paperId TEXT, page INT, x REAL, y REAL, content TEXT, color TEXT, tags TEXT)
+note(id TEXT, paperId TEXT, page INT, anchor_y_top_norm REAL, content TEXT, color TEXT, tags TEXT)
 ```
 
 ---
@@ -229,7 +236,7 @@ pub fn track_read_time(paper_id: &str, seconds: u32) {
 ```sql
 workspace(id, name, createdAt)
 paper(id, workspaceId, title, doi, path)
-note(id, paperId, page, x, y, content, color, tags, createdAt)
+note(id, paperId, page, anchor_y_top_norm, content, color, tags, createdAt)
 link(fromNoteId, toNoteId)
 note_stats(noteId, reviewCount, lastReviewedAt)
 paper_stats(paperId, totalReadTime, lastOpenedPage)

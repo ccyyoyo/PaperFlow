@@ -39,7 +39,7 @@ type RecentFile = {
 type DraftNote = {
   page: number;
   selectedText: string;
-  anchor: { x: number; y: number } | null;
+  anchorYTopNorm: number | null;
 };
 
 // 是否在 Tauri 執行環境
@@ -160,6 +160,7 @@ async function createTauriPdfUrl(path: string) {
 export function PdfViewer() {
   // 畫布參考：用於渲染目前頁面的位圖
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasWrapperRef = useRef<HTMLDivElement>(null);
   // 文字圖層容器：承載 PDF.js 產生的文字選取層
   const textLayerContainerRef = useRef<HTMLDivElement>(null);
   // 文字圖層建構器參考：維持 PDF.js textLayer builder 實例
@@ -211,15 +212,10 @@ export function PdfViewer() {
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // 筆記編輯器相關狀態
+  // 草稿卡片（由選取文字產生，尚未儲存）
   const [draftNote, setDraftNote] = useState<DraftNote | null>(null);
-  const [isEditorOpen, setEditorOpen] = useState(false);
-  const [noteContent, setNoteContent] = useState("");
-  const [noteColor, setNoteColor] = useState<NoteColor>("idea");
-  const [noteTags, setNoteTags] = useState<string[]>([]);
-  const [noteTagInput, setNoteTagInput] = useState("");
-  const [noteStatus, setNoteStatus] = useState<"idle" | "info">("idle");
-  const [noteMessage, setNoteMessage] = useState<string | null>(null);
+  // PDF 顯示模式：適合頁面（確保一頁完整可見）
+  const [fitMode, setFitMode] = useState(true);
   // 來自檢視器的跳點錨座標與臨時標記
   const jumpAnchor = useViewerStore((s) => s.jumpAnchor);
   const [marker, setMarker] = useState<{ x: number; y: number } | null>(null);
@@ -233,10 +229,20 @@ export function PdfViewer() {
   );
   // 筆記可見範圍（單頁/全部）
   const [notesScope, setNotesScope] = useState<"page" | "all">("page");
+  const [freePinnedPage, setFreePinnedPage] = useState<number | null>(null);
+  // 卡片側欄模式（分開瀏覽 / 對齊跟隨）
+  const [cardSidebarMode, setCardSidebarMode] = useState<"free" | "align">("free");
+  const notesBodyRef = useRef<HTMLDivElement>(null);
+  const [pageHeightPx, setPageHeightPx] = useState<number>(0);
+  const freeScrollTopRef = useRef<number>(0);
   const visibleNotes = useMemo(() => {
     const list = notesForPdf;
-    return notesScope === "page" ? list.filter((n) => n.page === pageNumber) : list;
-  }, [notesForPdf, notesScope, pageNumber]);
+    if (notesScope === "all") return list;
+
+    const targetPage =
+      cardSidebarMode === "free" ? freePinnedPage ?? pageNumber : pageNumber;
+    return list.filter((n) => n.page === targetPage);
+  }, [notesForPdf, notesScope, pageNumber, cardSidebarMode, freePinnedPage]);
 
   // Quick edit state for sidebar notes
   // 側邊欄快速編輯狀態
@@ -248,6 +254,11 @@ export function PdfViewer() {
 
   // 開始編輯指定筆記
   const beginEdit = (n: any) => {
+    if (draftNote && editingId === "__draft" && n?.id !== "__draft") {
+      if (!window.confirm("你有一張未儲存的卡片，確定要放棄嗎？")) return;
+      setDraftNote(null);
+      setEditingId(null);
+    }
     setEditingId(n.id);
     setEditContent(n.content ?? "");
     setEditColor(n.color ?? "idea");
@@ -256,6 +267,15 @@ export function PdfViewer() {
   };
   // 取消編輯並重置快速編輯狀態
   const cancelEdit = () => {
+    setEditingId(null);
+    setEditContent("");
+    setEditColor("idea");
+    setEditTags([]);
+    setEditTagInput("");
+  };
+
+  const cancelDraftCard = () => {
+    setDraftNote(null);
     setEditingId(null);
     setEditContent("");
     setEditColor("idea");
@@ -292,6 +312,7 @@ export function PdfViewer() {
       const rotation = (pdfPage as any)?.rotate ?? 0; // keep the page's inherent rotation
       const viewport = pdfPage.getViewport({ scale: safeScale, rotation, dontFlip: false as any });
       viewportRef.current = viewport;
+      setPageHeightPx(viewport.height);
 
       const context = canvas.getContext("2d");
       if (!context) return;
@@ -340,6 +361,47 @@ export function PdfViewer() {
     []
   );
 
+  const fitCurrentPage = useCallback(async () => {
+    if (!pdfDocument || status !== "ready") return;
+    const wrapper = canvasWrapperRef.current;
+    if (!wrapper) return;
+
+    const style = window.getComputedStyle(wrapper);
+    const paddingX =
+      Number.parseFloat(style.paddingLeft || "0") + Number.parseFloat(style.paddingRight || "0");
+    const paddingY =
+      Number.parseFloat(style.paddingTop || "0") + Number.parseFloat(style.paddingBottom || "0");
+
+    const availableWidth = Math.max(1, wrapper.clientWidth - paddingX);
+    const availableHeight = Math.max(1, wrapper.clientHeight - paddingY);
+
+    try {
+      const pdfPage: PDFPageProxy = await pdfDocument.getPage(pageNumber);
+      const rotation = (pdfPage as any)?.rotate ?? 0;
+      const baseViewport = pdfPage.getViewport({ scale: 1, rotation, dontFlip: false as any });
+      const nextScale = clamp(
+        Math.min(availableWidth / baseViewport.width, availableHeight / baseViewport.height),
+        MIN_SCALE,
+        MAX_SCALE
+      );
+      updateScale(Number(nextScale.toFixed(2)));
+    } catch (e) {
+      console.warn("Failed to fit page", e);
+    }
+  }, [pageNumber, pdfDocument, status, updateScale]);
+
+  useEffect(() => {
+    if (!fitMode) return;
+    fitCurrentPage();
+  }, [fitMode, fitCurrentPage, pageNumber, status]);
+
+  useEffect(() => {
+    if (!fitMode) return;
+    const onResize = () => fitCurrentPage();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [fitMode, fitCurrentPage]);
+
   // Flash a marker when a jump anchor request is emitted
   // 當收到跳點請求時，短暫顯示視覺標記
   useEffect(() => {
@@ -348,6 +410,26 @@ export function PdfViewer() {
     const t = setTimeout(() => setMarker(null), 1600);
     return () => clearTimeout(t);
   }, [jumpAnchor?.token]);
+
+  // 分開 / 對齊：保留分開模式的捲動位置，切到對齊時回到目前頁卡片並開始跟隨。
+  useEffect(() => {
+    const body = notesBodyRef.current;
+    if (!body) return;
+
+    if (cardSidebarMode === "align") {
+      freeScrollTopRef.current = body.scrollTop;
+      setNotesScope("page");
+      body.scrollTop = 0;
+      return;
+    }
+
+    body.scrollTop = freeScrollTopRef.current;
+  }, [cardSidebarMode]);
+
+  useEffect(() => {
+    if (cardSidebarMode !== "align") return;
+    if (notesBodyRef.current) notesBodyRef.current.scrollTop = 0;
+  }, [cardSidebarMode, pageNumber]);
 
   // 更新最近檔案清單：去重後前置並裁切至上限
   const updateRecentFiles = useCallback((entry: RecentFile) => {
@@ -407,11 +489,12 @@ export function PdfViewer() {
         setStatus("ready");
 
         setDraftNote(null);
-        setEditorOpen(false);
-        setNoteContent("");
-        setNoteColor("idea");
-        setNoteTags([]);
-        setNoteTagInput("");
+        setEditingId(null);
+        setEditContent("");
+        setEditColor("idea");
+        setEditTags([]);
+        setEditTagInput("");
+        setCardSidebarMode("free");
 
         if (touchRecent) {
           updateRecentFiles({
@@ -440,6 +523,7 @@ export function PdfViewer() {
                   id: String(n.id),
                   pdfId: String(n.paperId ?? resolvedPdfId),
                   page: Number(n.page ?? 1),
+                  quote: n.quote != null ? String(n.quote) : null,
                   content: String(n.content ?? ""),
                   color: (n.color ?? "idea") as NoteColor,
                   tags: String(n.tags ?? "")
@@ -447,7 +531,8 @@ export function PdfViewer() {
                     .map((t) => t.trim())
                     .filter(Boolean),
                   updatedAt: String(n.updatedAt ?? new Date().toISOString()),
-                  anchor: { x: Number(n.x ?? 0), y: Number(n.y ?? 0) },
+                  anchorYTopNorm:
+                    n.anchorYTopNorm != null ? Number(n.anchorYTopNorm) : null,
                 }));
                 setNotes(resolvedPdfId, mapped);
               }
@@ -518,19 +603,21 @@ export function PdfViewer() {
     });
   }, [pageNumber, source, status]);
 
-  // 編輯器開啟時監聽 Esc 關閉
+  // Esc：取消目前編輯（草稿/既有卡片）
   useEffect(() => {
-    if (!isEditorOpen) return;
-    // 處理鍵盤事件（Esc 關閉編輯器）
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setEditorOpen(false);
-        setDraftNote(null);
+      if (event.key !== "Escape") return;
+      if (editingId === "__draft") {
+        cancelDraftCard();
+        return;
+      }
+      if (editingId) {
+        cancelEdit();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isEditorOpen]);
+  }, [editingId]);
 
   // 點擊「開啟檔案」：在 Tauri 以原生選單選擇，否則觸發隱藏 input
   const handlePickClick = async () => {
@@ -595,16 +682,19 @@ export function PdfViewer() {
   };
 
   const handleZoomIn = () => {
+    setFitMode(false);
     const next = Math.min(MAX_SCALE, Number((scale + SCALE_STEP).toFixed(2)));
     updateScale(next);
   };
 
   const handleZoomOut = () => {
+    setFitMode(false);
     const next = Math.max(MIN_SCALE, Number((scale - SCALE_STEP).toFixed(2)));
     updateScale(next);
   };
 
   const handleZoomReset = () => {
+    setFitMode(false);
     updateScale(DEFAULT_SCALE);
   };
 
@@ -655,16 +745,10 @@ export function PdfViewer() {
     const range = selection.getRangeAt(0);
     const rect = range.getBoundingClientRect();
     const canvasRect = canvasRef.current?.getBoundingClientRect();
-    let anchor: DraftNote["anchor"] = null;
+    let anchorYTopNorm: number | null = null;
     if (canvasRect) {
-      const relativeX =
-        (rect.left + rect.width / 2 - canvasRect.left) / canvasRect.width;
-      const relativeY =
-        (rect.top + rect.height / 2 - canvasRect.top) / canvasRect.height;
-      anchor = {
-        x: Number(relativeX.toFixed(4)),
-        y: Number(relativeY.toFixed(4)),
-      };
+      const topY = (rect.top - canvasRect.top) / canvasRect.height;
+      anchorYTopNorm = Number(clamp(topY, 0, 1).toFixed(4));
     }
 
     const snippet = text.length > 200 ? `${text.slice(0, 200)}…` : text;
@@ -672,35 +756,22 @@ export function PdfViewer() {
     setDraftNote({
       page: pageNumber,
       selectedText: snippet,
-      anchor,
+      anchorYTopNorm,
     });
-    setNoteContent(snippet);
-    setEditorOpen(true);
-    setNoteColor("idea");
-    setNoteTags([]);
-    setNoteTagInput("");
-    setNoteStatus("idle");
-    setNoteMessage(null);
+    setEditContent(snippet);
+    setEditColor("idea");
+    setEditTags([]);
+    setEditTagInput("");
+    setEditingId("__draft");
+    setCardSidebarMode("align");
+    setNotesScope("page");
 
     setTimeout(() => selection.removeAllRanges(), 0);
   }, [pageNumber]);
 
-  const handleCancelNote = () => {
-    setEditorOpen(false);
-    setDraftNote(null);
-    setNoteContent("");
-    setNoteColor("idea");
-    setNoteTags([]);
-    setNoteTagInput("");
-    setNoteStatus("idle");
-    setNoteMessage(null);
-  };
-
-  const handleSaveNote = async () => {
-    const trimmed = noteContent.trim();
+  const saveDraftCard = async () => {
+    const trimmed = editContent.trim();
     if (!trimmed) {
-      setNoteStatus("info");
-      setNoteMessage("內容不可為空白");
       try {
         const { useToast } = await import("../state/useToast");
         useToast.getState().show("error", "內容不可為空白");
@@ -708,9 +779,7 @@ export function PdfViewer() {
       return;
     }
 
-    if (!currentPdf) {
-      setNoteStatus("info");
-      setNoteMessage("請先選擇並載入一份 PDF。");
+    if (!currentPdf || !draftNote) {
       try {
         const { useToast } = await import("../state/useToast");
         useToast.getState().show("info", "請先選擇並載入一份 PDF");
@@ -718,8 +787,8 @@ export function PdfViewer() {
       return;
     }
 
-    const anchor = draftNote?.anchor ?? { x: 0, y: 0 };
-    const pageForNote = draftNote?.page ?? pageNumber;
+    const anchorYTopNorm = draftNote.anchorYTopNorm ?? null;
+    const pageForNote = draftNote.page ?? pageNumber;
 
     if (isTauriRuntime && currentPdf.path) {
       try {
@@ -727,34 +796,36 @@ export function PdfViewer() {
           input: {
             paperId: currentPdf.id,
             page: pageForNote,
-            x: anchor?.x ?? 0,
-            y: anchor?.y ?? 0,
-            textHash: null,
+            anchorYTopNorm,
+            quote: draftNote.selectedText ?? null,
             content: trimmed,
-            color: noteColor,
-            tags: noteTags.join(","),
+            color: editColor,
+            tags: editTags.join(","),
           },
         });
         const mapped = {
           id: String(created.id),
           pdfId: currentPdf.id,
           page: Number(created.page ?? pageForNote),
+          quote: created.quote != null ? String(created.quote) : draftNote.selectedText ?? null,
           content: String(created.content ?? trimmed),
-          color: (created.color ?? noteColor) as NoteColor,
-          tags: String(created.tags ?? noteTags.join(","))
+          color: (created.color ?? editColor) as NoteColor,
+          tags: String(created.tags ?? editTags.join(","))
             .split(",")
             .map((t) => t.trim())
             .filter(Boolean),
           updatedAt: String(created.updatedAt ?? new Date().toISOString()),
-          anchor: { x: Number(created.x ?? anchor?.x ?? 0), y: Number(created.y ?? anchor?.y ?? 0) },
+          anchorYTopNorm:
+            created.anchorYTopNorm != null
+              ? Number(created.anchorYTopNorm)
+              : anchorYTopNorm,
         };
         upsertNoteInStore(currentPdf.id, mapped);
-        // Close editor after successful save
         try {
           const { useToast } = await import("../state/useToast");
-          useToast.getState().show("success", "筆記已儲存");
+          useToast.getState().show("success", "卡片已儲存");
         } catch {}
-        handleCancelNote();
+        cancelDraftCard();
         return;
       } catch (e) {
         console.warn("Failed to create note via backend; falling back to memory", e);
@@ -769,35 +840,17 @@ export function PdfViewer() {
     addNote({
       pdfId: currentPdf.id,
       page: pageForNote,
+      quote: draftNote.selectedText ?? null,
       content: trimmed,
-      color: noteColor,
-      tags: noteTags,
-      anchor,
+      color: editColor as any,
+      tags: editTags,
+      anchorYTopNorm,
     });
-    // Close editor after successful save (local)
     try {
       const { useToast } = await import("../state/useToast");
-      useToast.getState().show("success", "筆記已暫存於本機");
+      useToast.getState().show("success", "卡片已暫存於本機");
     } catch {}
-    handleCancelNote();
-  };
-
-  const handleTagKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter" || event.key === ",") {
-      event.preventDefault();
-      const value = noteTagInput.trim();
-      if (!value) return;
-      if (!noteTags.includes(value)) {
-        setNoteTags([...noteTags, value]);
-      }
-      setNoteTagInput("");
-    } else if (event.key === "Backspace" && noteTagInput === "") {
-      setNoteTags((prev) => prev.slice(0, -1));
-    }
-  };
-
-  const handleRemoveTag = (tag: string) => {
-    setNoteTags((prev) => prev.filter((item) => item !== tag));
+    cancelDraftCard();
   };
 
   const scaleDisplay = useMemo(
@@ -892,6 +945,18 @@ export function PdfViewer() {
             >
               重設
             </button>
+            <button
+              className={`pdf-viewer__button pdf-viewer__button--ghost ${fitMode ? "pdf-viewer__button--active" : ""}`}
+              onClick={() => {
+                setFitMode(true);
+                fitCurrentPage();
+              }}
+              disabled={status !== "ready"}
+              type="button"
+              title="自動調整縮放，確保完整顯示一頁"
+            >
+              適合頁面
+            </button>
           </div>
         </div>
       </div>
@@ -925,7 +990,7 @@ export function PdfViewer() {
 
       <div className="pdf-viewer__body">
         <div className="pdf-viewer__document">
-          <div className="pdf-viewer__canvas-wrapper">
+          <div ref={canvasWrapperRef} className="pdf-viewer__canvas-wrapper">
             {status === "loading" ? (
               <div className="pdf-viewer__skeleton">
                 <div className="skeleton pdf-viewer__skeleton-page" />
@@ -959,313 +1024,365 @@ export function PdfViewer() {
         </div>
         <aside className="pdf-viewer__notes">
           <header className="pdf-viewer__notes-header">
-            <h3>筆記</h3>
+            <h3>卡片</h3>
             <div className="pdf-viewer__notes-controls">
               <button
                 type="button"
-                className={`pdf-viewer__button pdf-viewer__button--ghost ${notesScope === "page" ? "pdf-viewer__button--active" : ""}`}
-                onClick={() => setNotesScope("page")}
+                className={`pdf-viewer__button pdf-viewer__button--ghost ${cardSidebarMode === "free" ? "pdf-viewer__button--active" : ""}`}
+                onClick={() => {
+                  setCardSidebarMode("free");
+                  setNotesScope("all");
+                }}
               >
-                本頁
+                分開
+              </button>
+              <button
+                type="button"
+                className={`pdf-viewer__button pdf-viewer__button--ghost ${cardSidebarMode === "align" ? "pdf-viewer__button--active" : ""}`}
+                onClick={() => setCardSidebarMode("align")}
+                disabled={!currentPdf}
+                title={!currentPdf ? "請先載入 PDF" : "回到目前頁面的卡片並開始跟隨"}
+              >
+                對齊
+              </button>
+            </div>
+          </header>
+          {cardSidebarMode === "free" && (
+            <div className="pdf-viewer__notes-subcontrols">
+              <button
+                type="button"
+                className={`pdf-viewer__button pdf-viewer__button--ghost ${notesScope === "page" ? "pdf-viewer__button--active" : ""}`}
+                onClick={() => {
+                  setFreePinnedPage(pageNumber);
+                  setNotesScope("page");
+                }}
+                disabled={!currentPdf}
+              >
+                固定頁
               </button>
               <button
                 type="button"
                 className={`pdf-viewer__button pdf-viewer__button--ghost ${notesScope === "all" ? "pdf-viewer__button--active" : ""}`}
                 onClick={() => setNotesScope("all")}
+                disabled={!currentPdf}
               >
                 全部
               </button>
             </div>
-          </header>
-          <div className="pdf-viewer__notes-body">
-            {currentPdf && visibleNotes.length === 0 && (
-              <p className="pdf-viewer__notes-empty">
-                {notesScope === "page" ? "本頁尚無筆記。" : "尚無筆記。"}
-              </p>
-            )}
-            <ul className="pdf-viewer__notes-list">
-              {visibleNotes.map((n) => (
-                <li key={n.id} className="pdf-viewer__note-row">
-                  <button
-                    type="button"
-                    className="pdf-viewer__note-row-button"
-                    onClick={() => {
-                      updatePageNumber(n.page);
-                      if (n.anchor) {
-                        setMarker({ x: n.anchor.x, y: n.anchor.y });
-                        setTimeout(() => setMarker(null), 1600);
-                      }
-                    }}
-                    title={`跳至第 ${n.page} 頁`}
-                  >
-                    <span
-                      className="pdf-viewer__note-row-swatch"
-                      style={{ background: (colorOptions[n.color]?.swatch as string) || "#6b7280" }}
-                    />
-                    <span className="pdf-viewer__note-row-main">
-                      <span className="pdf-viewer__note-row-title">第 {n.page} 頁</span>
-                      <span className="pdf-viewer__note-row-content">{n.content}</span>
-                      {n.tags.length > 0 && (
-                        <span className="pdf-viewer__note-row-tags">
-                          {n.tags.map((t) => (
-                            <em key={t}>#{t}</em>
-                          ))}
+          )}
+          <div
+            ref={notesBodyRef}
+            className="pdf-viewer__notes-body"
+            onScroll={() => {
+              if (cardSidebarMode === "free" && notesBodyRef.current) {
+                freeScrollTopRef.current = notesBodyRef.current.scrollTop;
+              }
+            }}
+          >
+            {(() => {
+              if (!currentPdf) {
+                return <p className="pdf-viewer__notes-empty">載入 PDF 後即可顯示卡片。</p>;
+              }
+
+              const draftCard =
+                draftNote && editingId === "__draft"
+                  ? ({
+                      id: "__draft",
+                      pdfId: currentPdf.id,
+                      page: draftNote.page,
+                      quote: draftNote.selectedText ?? null,
+                      content: editContent || draftNote.selectedText,
+                      color: (editColor || "idea") as any,
+                      tags: editTags,
+                      updatedAt: new Date().toISOString(),
+                      anchorYTopNorm: draftNote.anchorYTopNorm ?? null,
+                    } as any)
+                  : null;
+
+              const baseNotes =
+                cardSidebarMode === "align"
+                  ? notesForPdf.filter((n) => n.page === pageNumber)
+                  : visibleNotes;
+
+              const sidebarNotes = draftCard ? [draftCard, ...baseNotes] : baseNotes;
+
+              const renderCard = (n: any) => {
+                const swatch = (colorOptions?.[n.color]?.swatch as string) || "#6b7280";
+                const isDraft = n.id === "__draft";
+                const isEditing = editingId === n.id;
+
+                return (
+                  <>
+                    <button
+                      type="button"
+                      className="pdf-viewer__note-card-main"
+                      style={{ ["--note-swatch" as any]: swatch } as any}
+                      onClick={() => {
+                        updatePageNumber(n.page);
+                        if (n.anchorYTopNorm != null) {
+                          setMarker({ x: 0.5, y: Number(n.anchorYTopNorm) });
+                          setTimeout(() => setMarker(null), 1600);
+                        }
+                      }}
+                      title={`跳至第 ${n.page} 頁`}
+                    >
+                      <span className="pdf-viewer__note-row-swatch" />
+                      <span className="pdf-viewer__note-row-main">
+                        <span className="pdf-viewer__note-row-title">
+                          {isDraft ? "新卡片" : `第 ${n.page} 頁`}
                         </span>
-                      )}
-                    </span>
-                  </button>
-                  <div className="pdf-viewer__note-row-actions">
-                    {editingId === n.id ? (
-                      <>
-                        <button
-                          type="button"
-                          className="pdf-viewer__button pdf-viewer__button--ghost"
-                          onClick={async () => {
-                            if (!currentPdf) return;
-                            try {
-                              if (isTauriRuntime && currentPdf.path) {
-                                const updated = await invoke<any>("update_note_command", {
-                                  payload: {
-                                    id: n.id,
-                                    content: editContent,
-                                    color: editColor,
-                                    tags: editTags.join(","),
-                                  },
-                                });
-                                const mapped = {
-                                  id: String(updated.id ?? n.id),
-                                  pdfId: currentPdf.id,
-                                  page: Number(updated.page ?? n.page),
-                                  content: String(updated.content ?? editContent),
-                                  color: (updated.color ?? editColor) as NoteColor,
-                                  tags: String(updated.tags ?? editTags.join(","))
-                                    .split(",")
-                                    .map((t) => t.trim())
-                                    .filter(Boolean),
-                                  updatedAt: String(updated.updatedAt ?? new Date().toISOString()),
-                                  anchor: { x: Number(updated.x ?? n.anchor?.x ?? 0), y: Number(updated.y ?? n.anchor?.y ?? 0) },
-                                } as any;
-                                upsertNoteInStore(currentPdf.id, mapped);
-                              } else {
-                                upsertNoteInStore(currentPdf.id, {
-                                  ...n,
-                                  content: editContent,
-                                  color: editColor as any,
-                                  tags: editTags,
-                                  updatedAt: new Date().toISOString(),
-                                } as any);
-                              }
-                              try {
-                                const { useToast } = await import("../state/useToast");
-                                useToast.getState().show("success", "筆記已更新");
-                              } catch {}
-                            } finally {
-                              cancelEdit();
-                            }
-                          }}
-                        >
-                          儲存
-                        </button>
-                        <button
-                          type="button"
-                          className="pdf-viewer__button pdf-viewer__button--ghost"
-                          onClick={cancelEdit}
-                        >
-                          取消
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          className="pdf-viewer__button pdf-viewer__button--ghost"
-                          onClick={() => beginEdit(n)}
-                        >
-                          編輯
-                        </button>
-                        <button
-                          type="button"
-                          className="pdf-viewer__button pdf-viewer__button--ghost"
-                          onClick={async () => {
-                            if (!currentPdf) return;
-                            if (!window.confirm("確定刪除此筆記？")) return;
-                            if (isTauriRuntime && currentPdf.path) {
-                              try {
-                                await invoke("delete_note_command", { noteId: n.id });
-                              } catch (e) {
-                                const { useToast } = await import("../state/useToast");
-                                useToast.getState().show("error", "刪除失敗");
+                        <span className="pdf-viewer__note-row-content">{n.content}</span>
+                        {n.tags.length > 0 && (
+                          <span className="pdf-viewer__note-row-tags">
+                            {n.tags.map((t: string) => (
+                              <em key={t}>#{t}</em>
+                            ))}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+
+                    <div className="pdf-viewer__note-row-actions">
+                      {isEditing ? (
+                        <>
+                          <button
+                            type="button"
+                            className="pdf-viewer__button pdf-viewer__button--ghost"
+                            onClick={async () => {
+                              if (!currentPdf) return;
+                              if (isDraft) {
+                                await saveDraftCard();
                                 return;
                               }
-                            }
-                            useNotesStore.getState().deleteNote(currentPdf.id, n.id);
-                            try {
-                              const { useToast } = await import("../state/useToast");
-                              useToast.getState().show("success", "筆記已刪除");
-                            } catch {}
-                          }}
-                        >
-                          刪除
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  {editingId === n.id && (
-                    <div className="pdf-viewer__note-edit">
-                      <textarea
-                        value={editContent}
-                        onChange={(e) => setEditContent(e.target.value)}
-                        rows={3}
-                        placeholder="更新內容"
-                      />
-                      <div className="pdf-viewer__note-color-options">
-                        {Object.keys(colorOptions).map((key) => {
-                          const option = colorOptions[key];
-                          const isActive = editColor === key;
-                          return (
+                              try {
+                                if (isTauriRuntime && currentPdf.path) {
+                                  const updated = await invoke<any>("update_note_command", {
+                                    payload: {
+                                      id: n.id,
+                                      content: editContent,
+                                      color: editColor,
+                                      tags: editTags.join(","),
+                                    },
+                                  });
+                                  const mapped = {
+                                    id: String(updated.id ?? n.id),
+                                    pdfId: currentPdf.id,
+                                    page: Number(updated.page ?? n.page),
+                                    quote: updated.quote != null ? String(updated.quote) : n.quote ?? null,
+                                    content: String(updated.content ?? editContent),
+                                    color: (updated.color ?? editColor) as NoteColor,
+                                    tags: String(updated.tags ?? editTags.join(","))
+                                      .split(",")
+                                      .map((t: string) => t.trim())
+                                      .filter(Boolean),
+                                    updatedAt: String(updated.updatedAt ?? new Date().toISOString()),
+                                    anchorYTopNorm:
+                                      updated.anchorYTopNorm != null
+                                        ? Number(updated.anchorYTopNorm)
+                                        : n.anchorYTopNorm ?? null,
+                                  } as any;
+                                  upsertNoteInStore(currentPdf.id, mapped);
+                                } else {
+                                  upsertNoteInStore(currentPdf.id, {
+                                    ...n,
+                                    content: editContent,
+                                    color: editColor as any,
+                                    tags: editTags,
+                                    updatedAt: new Date().toISOString(),
+                                  } as any);
+                                }
+                                try {
+                                  const { useToast } = await import("../state/useToast");
+                                  useToast.getState().show("success", "卡片已更新");
+                                } catch {}
+                              } finally {
+                                cancelEdit();
+                              }
+                            }}
+                          >
+                            儲存
+                          </button>
+                          <button
+                            type="button"
+                            className="pdf-viewer__button pdf-viewer__button--ghost"
+                            onClick={() => {
+                              if (isDraft) {
+                                cancelDraftCard();
+                                return;
+                              }
+                              cancelEdit();
+                            }}
+                          >
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {!isDraft && (
                             <button
-                              key={key}
                               type="button"
-                              className={`pdf-viewer__note-color ${isActive ? "pdf-viewer__note-color--active" : ""}`}
-                              onClick={() => setEditColor(key)}
+                              className="pdf-viewer__button pdf-viewer__button--ghost"
+                              onClick={() => beginEdit(n)}
                             >
-                              <span
-                                className="pdf-viewer__note-color-swatch"
-                                style={{ background: option.swatch }}
-                              />
-                              {option.label}
+                              編輯
                             </button>
-                          );
-                        })}
-                      </div>
-                      <div className="pdf-viewer__note-tags-input">
-                        {editTags.map((tag) => (
-                          <span key={tag} className="pdf-viewer__note-tag">
-                            {tag}
+                          )}
+                          {isDraft ? (
                             <button
                               type="button"
-                              className="pdf-viewer__note-tag-remove"
-                              onClick={() => setEditTags(editTags.filter((t) => t !== tag))}
-                              aria-label={`移除標籤 ${tag}`}
+                              className="pdf-viewer__button pdf-viewer__button--ghost"
+                              onClick={cancelDraftCard}
                             >
-                              ×
+                              放棄
                             </button>
-                          </span>
-                        ))}
-                        <input
-                          value={editTagInput}
-                          onChange={(e) => setEditTagInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === ",") {
-                              e.preventDefault();
-                              const v = editTagInput.trim();
-                              if (v && !editTags.includes(v)) setEditTags([...editTags, v]);
-                              setEditTagInput("");
-                            } else if (e.key === "Backspace" && editTagInput === "") {
-                              setEditTags((prev) => prev.slice(0, -1));
-                            }
-                          }}
-                          placeholder={editTags.length === 0 ? "輸入後按 Enter" : "新增標籤"}
-                        />
-                      </div>
+                          ) : (
+                            <button
+                              type="button"
+                              className="pdf-viewer__button pdf-viewer__button--ghost"
+                              onClick={async () => {
+                                if (!currentPdf) return;
+                                if (!window.confirm("確定刪除此卡片？")) return;
+                                if (isTauriRuntime && currentPdf.path) {
+                                  try {
+                                    await invoke("delete_note_command", { noteId: n.id });
+                                  } catch (e) {
+                                    const { useToast } = await import("../state/useToast");
+                                    useToast.getState().show("error", "刪除失敗");
+                                    return;
+                                  }
+                                }
+                                useNotesStore.getState().deleteNote(currentPdf.id, n.id);
+                                try {
+                                  const { useToast } = await import("../state/useToast");
+                                  useToast.getState().show("success", "卡片已刪除");
+                                } catch {}
+                              }}
+                            >
+                              刪除
+                            </button>
+                          )}
+                        </>
+                      )}
                     </div>
+
+                    {isEditing && (
+                      <div className="pdf-viewer__note-edit">
+                        <textarea
+                          value={editContent}
+                          onChange={(e) => setEditContent(e.target.value)}
+                          rows={3}
+                          placeholder="更新內容"
+                        />
+                        <div className="pdf-viewer__note-color-options">
+                          {Object.keys(colorOptions).map((key) => {
+                            const option = colorOptions[key];
+                            const isActive = editColor === key;
+                            return (
+                              <button
+                                key={key}
+                                type="button"
+                                className={`pdf-viewer__note-color ${isActive ? "pdf-viewer__note-color--active" : ""}`}
+                                onClick={() => setEditColor(key)}
+                              >
+                                <span
+                                  className="pdf-viewer__note-color-swatch"
+                                  style={{ background: option.swatch }}
+                                />
+                                {option.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="pdf-viewer__note-tags-input">
+                          {editTags.map((tag: string) => (
+                            <span key={tag} className="pdf-viewer__note-tag">
+                              {tag}
+                              <button
+                                type="button"
+                                className="pdf-viewer__note-tag-remove"
+                                onClick={() => setEditTags(editTags.filter((t) => t !== tag))}
+                                aria-label={`移除標籤 ${tag}`}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                          <input
+                            value={editTagInput}
+                            onChange={(e) => setEditTagInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === ",") {
+                                e.preventDefault();
+                                const v = editTagInput.trim();
+                                if (v && !editTags.includes(v)) setEditTags([...editTags, v]);
+                                setEditTagInput("");
+                              } else if (e.key === "Backspace" && editTagInput === "") {
+                                setEditTags((prev) => prev.slice(0, -1));
+                              }
+                            }}
+                            placeholder={editTags.length === 0 ? "輸入後按 Enter" : "新增標籤"}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              };
+
+              if (cardSidebarMode === "align") {
+                if (sidebarNotes.length === 0) {
+                  return <p className="pdf-viewer__notes-empty">本頁尚無卡片。</p>;
+                }
+
+                const trackHeight = Math.max(pageHeightPx || 0, 520);
+                const minCardHeight = 150;
+                const gap = 12;
+                let cursorBottom = 0;
+
+                const sorted = [...sidebarNotes].sort(
+                  (a: any, b: any) => (a.anchorYTopNorm ?? 0) - (b.anchorYTopNorm ?? 0)
+                );
+
+                return (
+                  <div className="pdf-viewer__aligned-track" style={{ height: `${trackHeight}px` }}>
+                    {sorted.map((n: any) => {
+                      const rawTop = clamp(Number(n.anchorYTopNorm ?? 0), 0, 1) * trackHeight;
+                      const top = Math.max(rawTop, cursorBottom ? cursorBottom + gap : 0);
+                      cursorBottom = top + minCardHeight;
+                      return (
+                        <div
+                          key={n.id}
+                          className="pdf-viewer__note-card pdf-viewer__note-card--aligned"
+                          style={{ top: `${top}px` }}
+                        >
+                          {renderCard(n)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  {sidebarNotes.length === 0 && (
+                    <p className="pdf-viewer__notes-empty">
+                      {notesScope === "page" ? "固定頁尚無卡片。" : "尚無卡片。"}
+                    </p>
                   )}
-                </li>
-              ))}
-            </ul>
+                  <ul className="pdf-viewer__cards-list">
+                    {sidebarNotes.map((n: any) => (
+                      <li key={n.id} className="pdf-viewer__note-card">
+                        {renderCard(n)}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              );
+            })()}
           </div>
         </aside>
 
-        {isEditorOpen && (
-          <aside className="pdf-viewer__note-editor">
-            <header className="pdf-viewer__note-header">
-              <h2>新增筆記</h2>
-              <p>第 {draftNote?.page ?? pageNumber} 頁</p>
-            </header>
-            {draftNote?.selectedText && (
-              <div className="pdf-viewer__note-snippet">{draftNote.selectedText}</div>
-            )}
-            <div className="pdf-viewer__note-colors">
-              <span className="pdf-viewer__note-label">顏色分類</span>
-              <div className="pdf-viewer__note-color-options">
-                {Object.keys(colorOptions).map((key) => {
-                  const option = colorOptions[key];
-                  const isActive = noteColor === key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      className={`pdf-viewer__note-color ${isActive ? "pdf-viewer__note-color--active" : ""}`}
-                      onClick={() => setNoteColor(key as NoteColor)}
-                    >
-                      <span
-                        className="pdf-viewer__note-color-swatch"
-                        style={{ background: option.swatch }}
-                      />
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <label className="pdf-viewer__note-label" htmlFor="note-editor-textarea">
-              筆記內容
-            </label>
-            <textarea
-              id="note-editor-textarea"
-              value={noteContent}
-              onChange={(event) => setNoteContent(event.target.value)}
-              rows={8}
-              placeholder="輸入你的想法、待辦或標記"
-            />
-            <div className="pdf-viewer__note-tags">
-              <label className="pdf-viewer__note-label" htmlFor="note-tag-input">
-                標籤
-              </label>
-              <div className="pdf-viewer__note-tags-input">
-                {noteTags.map((tag) => (
-                  <span key={tag} className="pdf-viewer__note-tag">
-                    {tag}
-                    <button
-                      type="button"
-                      className="pdf-viewer__note-tag-remove"
-                      onClick={() => handleRemoveTag(tag)}
-                      aria-label={`移除標籤 ${tag}`}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-                <input
-                  id="note-tag-input"
-                  value={noteTagInput}
-                  onChange={(event) => setNoteTagInput(event.target.value)}
-                  onKeyDown={handleTagKeyDown}
-                  placeholder={noteTags.length === 0 ? "輸入後按 Enter" : "新增標籤"}
-                />
-              </div>
-            </div>
-            <div className="pdf-viewer__note-actions">
-              <button
-                className="pdf-viewer__button pdf-viewer__button--ghost"
-                onClick={handleSaveNote}
-                type="button"
-              >
-                儲存筆記
-              </button>
-              <button
-                className="pdf-viewer__button pdf-viewer__button--ghost"
-                onClick={handleCancelNote}
-                type="button"
-              >
-                取消
-              </button>
-            </div>
-            {noteStatus === "info" && noteMessage && (
-              <p className="pdf-viewer__note-message">{noteMessage}</p>
-            )}
-          </aside>
-        )}
       </div>
     </section>
   );

@@ -17,14 +17,16 @@ export type Note = {
   page: number;
   /** 文字內容 */
   content: string;
+  /** 引用片段（選取文字，可選） */
+  quote?: string | null;
   /** 指派顏色分類 */
   color: NoteColor;
   /** 關聯標籤 */
   tags: string[];
   /** 最後更新時間（ISO） */
   updatedAt: string;
-  /** 於頁面上的錨點座標（可為 null） */
-  anchor?: { x: number; y: number } | null;
+  /** 垂直錨點：選取文字上緣 y（0..1，relative to page height） */
+  anchorYTopNorm?: number | null;
 };
 
 /** 新增筆記的輸入（id 可選、updatedAt 由系統填寫）。 */

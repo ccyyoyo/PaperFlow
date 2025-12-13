@@ -16,9 +16,8 @@ Note
 - id: string
 - paperId: string
 - page: number (1-based)
-- x: number (0..1) anchor X (optional, see nullability)
-- y: number (0..1) anchor Y (optional)
-- textHash: string | null (optional anchor text hash)
+- anchorYTopNorm: number | null (0..1, top edge of selected text; used for card sidebar alignment)
+- quote: string | null (selected text, optional; used for preview/search)
 - content: string (required, trimmed, <= 10_000 chars)
 - color: string | null (semantic key, e.g. 'idea'|'method'|'result')
 - tags: string | null (comma-separated in DB; UI maps to string[])
@@ -59,9 +58,8 @@ Creates a note.
 NewNoteInput
 - paperId: string
 - page: number
-- x: number
-- y: number
-- textHash?: string | null
+- anchorYTopNorm: number | null
+- quote?: string | null
 - content: string
 - color?: string | null
 - tags?: string | null (comma-separated)
@@ -72,8 +70,8 @@ const note = await invoke<Note>('create_note_command', {
   input: {
     paperId,
     page,
-    x, y,
-    textHash: null,
+    anchorYTopNorm,
+    quote: null,
     content,
     color,                 // e.g., 'idea'
     tags: tags.join(','),  // UI string[] -> comma-separated
@@ -142,7 +140,7 @@ Implementation Notes (server‑side)
 - page: >= 1 and <= paper.totalPages (UI enforces; DB trusts input).
 - tags: UI maintains string[]; backend expects comma-separated (no spaces recommended).
 - color: free-form key; UI maps to taxonomy (idea/method/result or user-defined).
-- Anchor (x,y): normalized 0..1; optional.
+- Anchor (`anchorYTopNorm`): normalized 0..1; optional.
 
 ## Error Model (current)
 - All commands return `Result<T, String>`. The string is a human-readable message from DB or app layer.
@@ -177,10 +175,10 @@ const paper = await invoke('upsert_paper_command', { title: 'sample.pdf', path: 
 // List notes
 const notes = await invoke('list_notes_command', { paperId: paper.id })
 
-// Create note
-await invoke('create_note_command', {
-  input: { paperId: paper.id, page: 3, x: 0.45, y: 0.32, textHash: null, content: 'Idea', color: 'idea', tags: 'tag1,tag2' }
-})
+  // Create note
+  await invoke('create_note_command', {
+  input: { paperId: paper.id, page: 3, anchorYTopNorm: 0.32, quote: null, content: 'Idea', color: 'idea', tags: 'tag1,tag2' }
+  })
 
 // Update note
 await invoke('update_note_command', { payload: { id: notes[0].id, content: 'Updated', color: 'result', tags: 'tag1' } })

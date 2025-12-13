@@ -18,7 +18,7 @@ React + Vite (Frontend UI & Dev Server)
 
 ## 1. Frontend (React + Vite)
 - Lives inside the browser view that Tauri embeds.
-- Draws the PDF reader, note panel, search bar, and review widgets.
+- Draws the PDF reader, note panel, note card sidebar (free/follow), search bar, and review widgets.
 - Calls Tauri commands whenever it needs help from Rust (e.g., save a note, run a search).
 - Uses the Vite dev server for instant hot reloads while developing.
 
@@ -84,7 +84,7 @@ React + Vite（前端介面與開發伺服器）
 
 ### 1. 前端（React + Vite）
 - 執行在 Tauri 嵌入的瀏覽器視圖內。
-- 負責顯示 PDF 閱讀器、筆記面板、搜尋列與回顧小工具。
+- 負責顯示 PDF 閱讀器、卡片側欄（分開/對齊）、卡片管理頁、搜尋列與回顧小工具。
 - 需要後端協助時會呼叫 Tauri Command（例如儲存筆記、執行搜尋）。
 - 開發時由 Vite Dev Server 提供即時熱重載。
 

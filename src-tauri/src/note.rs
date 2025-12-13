@@ -10,9 +10,8 @@ pub struct Note {
   pub id: String,
   pub paper_id: String,
   pub page: i32,
-  pub x: f32,
-  pub y: f32,
-  pub text_hash: Option<String>,
+  pub anchor_y_top_norm: Option<f32>,
+  pub quote: Option<String>,
   pub content: String,
   pub color: Option<String>,
   pub tags: Option<String>,
@@ -26,9 +25,8 @@ pub struct Note {
 pub struct NewNoteInput {
   pub paper_id: String,
   pub page: i32,
-  pub x: f32,
-  pub y: f32,
-  pub text_hash: Option<String>,
+  pub anchor_y_top_norm: Option<f32>,
+  pub quote: Option<String>,
   pub content: String,
   pub color: Option<String>,
   pub tags: Option<String>,
@@ -48,15 +46,14 @@ pub struct UpdateNoteInput {
 pub fn create_note(conn: &Connection, input: NewNoteInput) -> Result<Note> {
   let id = Uuid::new_v4().to_string();
   conn.execute(
-    "INSERT INTO note (id, paper_id, page, x, y, text_hash, content, color, tags)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    "INSERT INTO note (id, paper_id, page, anchor_y_top_norm, quote, content, color, tags)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     params![
       id,
       input.paper_id,
       input.page,
-      input.x,
-      input.y,
-      input.text_hash,
+      input.anchor_y_top_norm,
+      input.quote,
       input.content,
       input.color,
       input.tags
@@ -69,7 +66,7 @@ pub fn create_note(conn: &Connection, input: NewNoteInput) -> Result<Note> {
 /// 依 Paper 識別列出其所有筆記，依頁碼與建立時間排序。
 pub fn list_notes_by_paper(conn: &Connection, paper_id: &str) -> Result<Vec<Note>> {
   let mut stmt = conn.prepare(
-    "SELECT id, paper_id, page, x, y, text_hash, content, color, tags, created_at, updated_at
+    "SELECT id, paper_id, page, anchor_y_top_norm, quote, content, color, tags, created_at, updated_at
      FROM note
      WHERE paper_id = ?
      ORDER BY page, created_at",
@@ -80,14 +77,13 @@ pub fn list_notes_by_paper(conn: &Connection, paper_id: &str) -> Result<Vec<Note
       id: row.get(0)?,
       paper_id: row.get(1)?,
       page: row.get(2)?,
-      x: row.get(3)?,
-      y: row.get(4)?,
-      text_hash: row.get(5)?,
-      content: row.get(6)?,
-      color: row.get(7)?,
-      tags: row.get(8)?,
-      created_at: row.get(9)?,
-      updated_at: row.get(10)?,
+      anchor_y_top_norm: row.get(3)?,
+      quote: row.get(4)?,
+      content: row.get(5)?,
+      color: row.get(6)?,
+      tags: row.get(7)?,
+      created_at: row.get(8)?,
+      updated_at: row.get(9)?,
     })
   })?;
 
@@ -118,7 +114,7 @@ pub fn delete_note(conn: &Connection, note_id: &str) -> Result<()> {
 /// 依 id 取回單筆筆記。
 fn fetch_note(conn: &Connection, note_id: &str) -> Result<Note> {
   conn.query_row(
-    "SELECT id, paper_id, page, x, y, text_hash, content, color, tags, created_at, updated_at
+    "SELECT id, paper_id, page, anchor_y_top_norm, quote, content, color, tags, created_at, updated_at
      FROM note
      WHERE id = ?",
     params![note_id],
@@ -127,14 +123,13 @@ fn fetch_note(conn: &Connection, note_id: &str) -> Result<Note> {
         id: row.get(0)?,
         paper_id: row.get(1)?,
         page: row.get(2)?,
-        x: row.get(3)?,
-        y: row.get(4)?,
-        text_hash: row.get(5)?,
-        content: row.get(6)?,
-        color: row.get(7)?,
-        tags: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        anchor_y_top_norm: row.get(3)?,
+        quote: row.get(4)?,
+        content: row.get(5)?,
+        color: row.get(6)?,
+        tags: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
       })
     },
   )
